@@ -12,6 +12,7 @@ pic8259 = "0.10"
 pc-keyboard = "0.7"
 spin = "0.9.8"   
 noto-sans-mono-bitmap = "0.2"
+linked_list_allocator = "0.10.5"
 # For low-level memory operations
 volatile = "0.6"
 
