@@ -5,8 +5,10 @@
 use limine::request::FramebufferRequest;
 use limine::BaseRevision;
 use core::arch::x86_64::_rdtsc;
+use core::sync::atomic::Ordering;
 
-mod interrupts; // IMPORT THE NEW MODULE
+mod interrupts;
+mod state;
 
 #[used]
 static BASE_REVISION: BaseRevision = BaseRevision::new();
@@ -21,12 +23,15 @@ fn panic(_info: &core::panic::PanicInfo) -> ! {
 
 #[no_mangle]
 pub extern "C" fn _start() -> ! {
-    // 1. INITIALIZE INTERRUPTS
+    // 1. INITIALIZE NERVOUS SYSTEM
     interrupts::init_idt();
-
-    // 2. FIRE A TEST INTERRUPT (Breakpoint)
-    // If the OS doesn't crash here, it means our IDT works!
-    x86_64::instructions::interrupts::int3();
+    unsafe { interrupts::PICS.lock().initialize() };
+    
+    // FORCE UNMASK: Explicitly tell PIC to listen to Timer & Keyboard
+    interrupts::enable_listening();
+    
+    // UNMUTE CPU
+    x86_64::instructions::interrupts::enable();
 
     let framebuffer_response = FRAMEBUFFER_REQUEST.get_response().unwrap();
     let framebuffer = framebuffer_response.framebuffers().next().unwrap();
@@ -36,50 +41,52 @@ pub extern "C" fn _start() -> ! {
     let height = framebuffer.height() as usize;
     let pitch = framebuffer.pitch() as usize / 4;
 
-    // VISUAL CONFIRMATION:
-    // Draw a WHITE line at the very top to prove we survived the interrupt.
-    for x in 0..width {
-        unsafe {
-            *video_ptr.add(x) = 0xFFFFFFFF; // White
-        }
-    }
-
-    let cycle_budget: u64 = 2_500_000; 
     let mut frame_count: u64 = 0;
     
     loop {
+        let cycle_budget = state::CYCLE_BUDGET.load(Ordering::Relaxed);
         let start_time = unsafe { _rdtsc() };
 
+        // ---------------------------------------------------------
+        // DEBUG LATCH
+        // ---------------------------------------------------------
+        // Start RED. If we hear ANYTHING from the hardware, turn GREEN.
+        let key_count = state::KEY_COUNT.load(Ordering::Relaxed);
+        
+        // If count > 0, interrupts are alive.
+        let debug_color = if key_count > 0 { 
+            0x0000FF00 // GREEN (ALIVE)
+        } else { 
+            0x00FF0000 // RED (DEAD)
+        };
+
+        for y in 0..50 {
+            for x in 0..50 {
+                unsafe {
+                    *video_ptr.add(y * pitch + x) = debug_color;
+                }
+            }
+        }
+
+        // ---------------------------------------------------------
+        // BACKGROUND & GAUGE (Standard)
+        // ---------------------------------------------------------
         let blue_val = (frame_count % 255) as u32;
         let bg_color = 0x00102000 | blue_val; 
-
-        // Start from y=50
         for y in 50..height { 
             for x in 0..width {
-                unsafe {
-                    let offset = y * pitch + x;
-                    *video_ptr.add(offset) = bg_color;
-                }
+                unsafe { *video_ptr.add(y * pitch + x) = bg_color; }
             }
         }
 
         let end_time = unsafe { _rdtsc() };
         let elapsed = end_time - start_time;
-
         let mut bar_width = ((elapsed as u128 * width as u128) / cycle_budget as u128) as usize;
         if bar_width > width { bar_width = width; }
+        let usage_color = if bar_width < width / 2 { 0x0000FF00 } else { 0x00FF0000 };
 
-        let usage_color = if bar_width < width / 2 {
-            0x0000FF00 
-        } else if bar_width < width {
-            0x00FFFF00 
-        } else {
-            0x00FF0000 
-        };
-
-        // Draw Fuel Gauge
-        for y in 10..50 { // Draw below the white interrupt line
-            for x in 0..width {
+        for y in 0..50 { 
+            for x in 50..width {
                 unsafe {
                     let offset = y * pitch + x;
                     if x < bar_width {
@@ -90,7 +97,6 @@ pub extern "C" fn _start() -> ! {
                 }
             }
         }
-
         frame_count = frame_count.wrapping_add(1);
     }
 }

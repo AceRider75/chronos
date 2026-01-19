@@ -8,6 +8,9 @@ edition = "2021"
 limine = "0.5" 
 x86_64 = "0.14"
 lazy_static = { version = "1.5.0", features = ["spin_no_std"] }
+pic8259 = "0.10"
+pc-keyboard = "0.7"
+spin = "0.9.8"   
 # For low-level memory operations
 volatile = "0.6"
 
