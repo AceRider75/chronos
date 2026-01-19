@@ -1,9 +1,12 @@
+#![feature(abi_x86_interrupt)]
 #![no_std]
 #![no_main]
 
 use limine::request::FramebufferRequest;
 use limine::BaseRevision;
 use core::arch::x86_64::_rdtsc;
+
+mod interrupts; // IMPORT THE NEW MODULE
 
 #[used]
 static BASE_REVISION: BaseRevision = BaseRevision::new();
@@ -18,6 +21,13 @@ fn panic(_info: &core::panic::PanicInfo) -> ! {
 
 #[no_mangle]
 pub extern "C" fn _start() -> ! {
+    // 1. INITIALIZE INTERRUPTS
+    interrupts::init_idt();
+
+    // 2. FIRE A TEST INTERRUPT (Breakpoint)
+    // If the OS doesn't crash here, it means our IDT works!
+    x86_64::instructions::interrupts::int3();
+
     let framebuffer_response = FRAMEBUFFER_REQUEST.get_response().unwrap();
     let framebuffer = framebuffer_response.framebuffers().next().unwrap();
     
@@ -26,21 +36,24 @@ pub extern "C" fn _start() -> ! {
     let height = framebuffer.height() as usize;
     let pitch = framebuffer.pitch() as usize / 4;
 
-    // THE BUDGET: Keep it at the "Edge of Chaos" value you found
-    let cycle_budget: u64 = 2_500_000; 
+    // VISUAL CONFIRMATION:
+    // Draw a WHITE line at the very top to prove we survived the interrupt.
+    for x in 0..width {
+        unsafe {
+            *video_ptr.add(x) = 0xFFFFFFFF; // White
+        }
+    }
 
+    let cycle_budget: u64 = 2_500_000; 
     let mut frame_count: u64 = 0;
     
     loop {
         let start_time = unsafe { _rdtsc() };
 
-        // -------------------------------------------------------------
-        // 1. THE WORKLOAD (Drawing the Blue Background)
-        // -------------------------------------------------------------
         let blue_val = (frame_count % 255) as u32;
         let bg_color = 0x00102000 | blue_val; 
 
-        // Draw the background (skipping top 50 lines for the Fuel Gauge)
+        // Start from y=50
         for y in 50..height { 
             for x in 0..width {
                 unsafe {
@@ -50,43 +63,29 @@ pub extern "C" fn _start() -> ! {
             }
         }
 
-        // -------------------------------------------------------------
-        // 2. CALCULATE TIME COST
-        // -------------------------------------------------------------
         let end_time = unsafe { _rdtsc() };
         let elapsed = end_time - start_time;
 
-        // Math: (elapsed / budget) * width
-        // We use u128 to prevent overflow during the multiplication
         let mut bar_width = ((elapsed as u128 * width as u128) / cycle_budget as u128) as usize;
-        
-        // Cap the bar width so it doesn't wrap around the screen if we fail hard
-        if bar_width > width {
-            bar_width = width;
-        }
+        if bar_width > width { bar_width = width; }
 
-        // -------------------------------------------------------------
-        // 3. DRAW THE SEMANTIC FUEL GAUGE
-        // -------------------------------------------------------------
-        
-        // Determine Color based on usage
-        // < 50% = Green, > 50% = Yellow, > 100% = Red
         let usage_color = if bar_width < width / 2 {
-            0x0000FF00 // Green
+            0x0000FF00 
         } else if bar_width < width {
-            0x00FFFF00 // Yellow
+            0x00FFFF00 
         } else {
-            0x00FF0000 // Red (Failure)
+            0x00FF0000 
         };
 
-        for y in 0..50 { // Make the bar 50px tall so it's obvious
+        // Draw Fuel Gauge
+        for y in 10..50 { // Draw below the white interrupt line
             for x in 0..width {
                 unsafe {
                     let offset = y * pitch + x;
                     if x < bar_width {
-                        *video_ptr.add(offset) = usage_color; // Used Time
+                        *video_ptr.add(offset) = usage_color;
                     } else {
-                        *video_ptr.add(offset) = 0x00333333; // Dark Grey (Free Time)
+                        *video_ptr.add(offset) = 0x00333333;
                     }
                 }
             }

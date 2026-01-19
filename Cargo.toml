@@ -6,6 +6,8 @@ edition = "2021"
 [dependencies]
 # The interface to talk to the bootloader
 limine = "0.5" 
+x86_64 = "0.14"
+lazy_static = { version = "1.5.0", features = ["spin_no_std"] }
 # For low-level memory operations
 volatile = "0.6"
 
