@@ -11,6 +11,7 @@ lazy_static = { version = "1.5.0", features = ["spin_no_std"] }
 pic8259 = "0.10"
 pc-keyboard = "0.7"
 spin = "0.9.8"   
+noto-sans-mono-bitmap = "0.2"
 # For low-level memory operations
 volatile = "0.6"
 
