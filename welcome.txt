@@ -1,0 +1,4 @@
+Welcome to Chronos OS!
+This file was loaded from the Ramdisk.
+Time is the ultimate currency.
+Do not waste it.

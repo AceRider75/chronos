@@ -1,7 +1,10 @@
-use crate::{input, writer};
+use crate::{input, writer, fs}; // Import the new FS module
 use alloc::string::String;
 use alloc::vec::Vec;
+use spin::Mutex;
+use lazy_static::lazy_static;
 
+// --- THE SHELL STRUCTURE ---
 pub struct Shell {
     command_buffer: String,
 }
@@ -13,14 +16,14 @@ impl Shell {
         }
     }
 
-    // This function will be called by the Scheduler repeatedly
+    // This function is called repeatedly by the Scheduler
     pub fn run(&mut self) {
-        // Check if there are keys in the buffer
+        // Drain the Input Buffer (process all queued keys)
         while let Some(c) = input::pop_key() {
             match c {
                 '\n' => {
-                    // User pressed Enter
-                    writer::print("\n"); // New line on screen
+                    // User pressed Enter: Execute and reset
+                    writer::print("\n");
                     self.execute_command();
                     self.command_buffer.clear();
                     writer::print("> "); // Prompt for next command
@@ -29,15 +32,12 @@ impl Shell {
                     // Backspace (ASCII 0x08)
                     if !self.command_buffer.is_empty() {
                         self.command_buffer.pop();
-                        // Visual hack: move cursor back, print space, move back
-                        // Since we don't have full terminal control, we'll just print a generic backspace indicator for now
-                        // or just ignore visual deletion until we have a better terminal.
-                        // Ideally: writer::backspace();
-                        writer::print("\x08"); // Try printing the char, writer might handle it?
+                        // Send backspace char to writer for visual handling
+                        writer::print("\x08"); 
                     }
                 }
                 _ => {
-                    // Normal character
+                    // Standard character: Append and echo
                     self.command_buffer.push(c);
                     let mut s = String::new();
                     s.push(c);
@@ -49,20 +49,64 @@ impl Shell {
 
     fn execute_command(&self) {
         let cmd = self.command_buffer.trim();
-        match cmd {
+        
+        // Split string into command + arguments (e.g. "cat welcome.txt")
+        let parts: Vec<&str> = cmd.split_whitespace().collect();
+        
+        if parts.is_empty() { return; }
+
+        match parts[0] {
             "help" => {
-                writer::print("Chronos Shell v0.1\n");
-                writer::print("Commands: help, ver, clear, budget\n");
+                writer::print("Chronos Shell v0.2\n");
+                writer::print("Commands:\n");
+                writer::print("  help       - Show this menu\n");
+                writer::print("  ver        - Show OS version\n");
+                writer::print("  clear      - Clear screen\n");
+                writer::print("  ls         - List files in Ramdisk\n");
+                writer::print("  cat <file> - Print file content\n");
             },
-            "ver" => writer::print("Chronos OS v0.5 - Phase 6\n"),
+            "ver" => {
+                writer::print("Chronos OS v0.6\n");
+                writer::print("Phase 7: Persistence (Ramdisk)\n");
+            },
             "clear" => {
+                // We need to lock the writer manually to access special methods
                 if let Some(w) = writer::WRITER.lock().as_mut() {
                     w.clear();
-                    w.cursor_y = 10;
+                    // Reset cursor to top, but leave room for status bar if you want
+                    w.cursor_y = 10; 
                 }
             },
-            "budget" => writer::print("TODO: Adjust budget via command\n"),
-            "" => {}, // Empty enter
+            "ls" => {
+                writer::print("--- Ramdisk Files ---\n");
+                let files = fs::list_files();
+                
+                if files.is_empty() {
+                    writer::print("(Empty)\n");
+                } else {
+                    for file in files {
+                        writer::print("- ");
+                        writer::print(&file.name);
+                        writer::print("\n");
+                    }
+                }
+            },
+            "cat" => {
+                if parts.len() < 2 {
+                    writer::print("Usage: cat <filename>\n");
+                } else {
+                    let filename = parts[1];
+                    // Search for the file
+                    if let Some(content) = fs::read_file(filename) {
+                        writer::print("--- BEGIN FILE ---\n");
+                        writer::print(&content);
+                        if !content.ends_with('\n') { writer::print("\n"); }
+                        writer::print("--- END FILE ---\n");
+                    } else {
+                        writer::print("Error: File not found.\n");
+                    }
+                }
+            },
             _ => {
                 writer::print("Unknown command: ");
                 writer::print(cmd);
@@ -72,14 +116,12 @@ impl Shell {
     }
 }
 
-// Global Shell Instance
-use spin::Mutex;
-use lazy_static::lazy_static;
+// --- GLOBAL SHELL INSTANCE ---
 lazy_static! {
     pub static ref SHELL: Mutex<Shell> = Mutex::new(Shell::new());
 }
 
-// The Job function for the Scheduler
+// --- SCHEDULER ENTRY POINT ---
 pub fn shell_task() {
     SHELL.lock().run();
 }

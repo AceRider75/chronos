@@ -22,7 +22,8 @@ mod writer;
 mod allocator;
 mod scheduler;
 mod input; // <--- NEW: Keyboard Buffer
-mod shell; // <--- NEW: Command Processor
+mod shell;
+mod fs;
 
 #[used]
 static BASE_REVISION: BaseRevision = BaseRevision::new();

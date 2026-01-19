@@ -45,8 +45,9 @@ impl Scheduler {
     }
 
     // THE EXECUTION LOOP
+// THE EXECUTION LOOP
     pub fn execute_frame(&mut self) {
-        let mut total_time: u64 = 0;
+        // Removed 'total_time' variable to fix warning
 
         for task in self.tasks.iter_mut() {
             // 1. START CLOCK
@@ -60,7 +61,7 @@ impl Scheduler {
             let cost = end - start;
             
             task.last_cost = cost;
-            total_time += cost;
+            // Removed 'total_time += cost'
 
             // 4. JUDGE TASK
             if cost <= task.budget {
