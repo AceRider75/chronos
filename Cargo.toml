@@ -5,11 +5,10 @@ edition = "2021"
 
 [dependencies]
 # The interface to talk to the bootloader
-limine = "0.3" 
+limine = "0.5" 
 # For low-level memory operations
 volatile = "0.6"
-lazy_static = "1.5.0"
-spin = "0.9.8"
+
 
 [profile.dev]
 panic = "abort" # If we crash, just stop. Don't unwind.
