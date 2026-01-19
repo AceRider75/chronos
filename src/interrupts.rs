@@ -6,6 +6,7 @@ use spin::Mutex;
 use x86_64::instructions::port::Port;
 use pc_keyboard::{layouts, DecodedKey, HandleControl, Keyboard, ScancodeSet1};
 use crate::state;
+use crate::input;
 
 pub const PIC_1_OFFSET: u8 = 32;
 pub const PIC_2_OFFSET: u8 = PIC_1_OFFSET + 8;
@@ -63,18 +64,14 @@ extern "x86-interrupt" fn keyboard_interrupt_handler(_stack_frame: InterruptStac
     let mut port = Port::new(0x60);
     let scancode: u8 = unsafe { port.read() };
 
-    // Increment counter on keypress too
     state::KEY_COUNT.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
 
     if let Ok(Some(key_event)) = keyboard.add_byte(scancode) {
         if let Some(key) = keyboard.process_keyevent(key_event) {
             match key {
                 DecodedKey::Unicode(character) => {
-                    match character {
-                        '=' | '+' => state::adjust_budget(1_000_000), 
-                        '-' | '_' => state::adjust_budget(-1_000_000),
-                        _ => {},
-                    }
+                    // PUSH THE KEY TO OUR NEW BUFFER
+                    input::push_key(character);
                 },
                 DecodedKey::RawKey(_) => {},
             }

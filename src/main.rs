@@ -1,5 +1,5 @@
 #![feature(abi_x86_interrupt)]
-#![feature(alloc_error_handler)] // Enable OOM handling
+#![feature(alloc_error_handler)]
 #![no_std]
 #![no_main]
 
@@ -20,7 +20,9 @@ mod interrupts;
 mod state;
 mod writer;
 mod allocator;
-mod scheduler; // The new Time-Aware Scheduler
+mod scheduler;
+mod input; // <--- NEW: Keyboard Buffer
+mod shell; // <--- NEW: Command Processor
 
 #[used]
 static BASE_REVISION: BaseRevision = BaseRevision::new();
@@ -30,42 +32,23 @@ static FRAMEBUFFER_REQUEST: FramebufferRequest = FramebufferRequest::new();
 
 #[panic_handler]
 fn panic(info: &core::panic::PanicInfo) -> ! {
-    // Emergency printing if the kernel crashes
     writer::print("\n\n[KERNEL PANIC]\n");
     if let Some(location) = info.location() {
         writer::print("File: ");
         writer::print(location.file());
         writer::print("\nLine: ");
-        // We can't format integers easily in panic without alloc, so just print a marker
         writer::print("SEE SOURCE\n");
     }
     loop { core::hint::spin_loop(); }
 }
 
-// --- DUMMY TASKS ---
-
-// Task 1: A very fast task (Simple addition)
-// This represents a system service like "Check Battery"
+// --- BACKGROUND TASKS ---
 fn task_fast_math() {
     let mut x: u64 = 0;
     for i in 0..1000 {
         x = x.wrapping_add(i);
     }
-    // 'black_box' prevents the compiler from deleting this loop during optimization
     core::hint::black_box(x); 
-}
-
-// Task 2: A heavy task (Simulated heavy load)
-// This represents a user application like "Web Browser" or "Video Player"
-// We intentionally make this heavy to test the Deadline Failure logic.
-fn task_heavy_render() {
-    let mut x: u64 = 0;
-    // ADJUST THIS NUMBER if it always passes or always fails on your PC.
-    // 5_000_000 is usually heavy enough for QEMU.
-    for i in 0..100_000_000 { 
-        x = x.wrapping_add(i);
-    }
-    core::hint::black_box(x);
 }
 
 #[no_mangle]
@@ -91,59 +74,48 @@ pub extern "C" fn _start() -> ! {
 
     writer::Writer::init(video_ptr, width, height, pitch);
     
-    // Clear screen initially
+    // Clear screen once at startup
     if let Some(w) = writer::WRITER.lock().as_mut() {
         w.clear();
     }
 
-    writer::print("Chronos OS v0.4\n");
-    writer::print("--------------------------\n");
+    writer::print("Chronos OS v0.5 - Interactive Shell\n");
+    writer::print("-----------------------------------\n");
 
     // -----------------------------------------------------------------------
     // 3. MEMORY INIT
     // -----------------------------------------------------------------------
     allocator::init_heap();
-    writer::print("[ OK ] Heap Initialized (100 KB)\n");
+    writer::print("[ OK ] Heap Initialized\n");
 
     // -----------------------------------------------------------------------
     // 4. SCHEDULER INIT
     // -----------------------------------------------------------------------
     let mut chronos_scheduler = scheduler::Scheduler::new();
 
-    // Define the Contracts
-    // "SysCheck" gets 50k cycles. If it takes longer, it FAILS.
+    // ADD TASKS:
+    // 1. The Shell (Generous budget for typing responsiveness)
+    chronos_scheduler.add_task("Shell", 100_000, shell::shell_task);
+
+    // 2. Background System Check (Keep the scheduler busy)
     chronos_scheduler.add_task("SysCheck", 50_000, task_fast_math);
 
-    // "RenderUI" gets 2M cycles. Our loop is designed to take ~5M cycles.
-    // EXPECTATION: This task should print [ FAIL ].
-    chronos_scheduler.add_task("RenderUI", 1, task_heavy_render);
-
-    writer::print("[ OK ] Scheduler Initialized. Starting Main Loop...\n");
+    writer::print("[ OK ] Scheduler Active.\n");
+    writer::print("[INFO] Type 'help' for commands.\n\n");
+    writer::print("> "); // The First Prompt
 
     // -----------------------------------------------------------------------
     // 5. THE MAIN LOOP
     // -----------------------------------------------------------------------
     loop {
-        // A. Clear the screen (Dirty hack to update text)
-        // In a real OS, we would only redraw what changed.
-        if let Some(w) = writer::WRITER.lock().as_mut() {
-             w.clear();
-             // Manually reset cursor to top left so we overwrite previous text
-             w.cursor_x = 10;
-             w.cursor_y = 10;
-        }
+        // NOTE: We REMOVED w.clear() here. 
+        // We want the text history to stay on screen!
 
-        writer::print("Chronos OS - Scheduler Active\n");
-        writer::print("-----------------------------\n");
-
-        // B. EXECUTE ALL TASKS
+        // A. EXECUTE ALL TASKS (Including Shell)
         chronos_scheduler.execute_frame();
 
-        // C. DRAW DEBUG REPORT (Text)
-        chronos_scheduler.draw_debug();
-
-        // D. DRAW GLOBAL LOAD (Visual)
-        // Calculate total time spent by all tasks
+        // B. DRAW GLOBAL LOAD (Visual Fuel Gauge)
+        // We move this to the BOTTOM of the screen so it doesn't overwrite text.
         let total_cost: u64 = chronos_scheduler.tasks.iter().map(|t| t.last_cost).sum();
         let global_budget = state::CYCLE_BUDGET.load(Ordering::Relaxed);
         
@@ -152,23 +124,23 @@ pub extern "C" fn _start() -> ! {
 
         let color = if bar_width < width { 0x0000FF00 } else { 0x00FF0000 };
         
-        // Draw bar at y=400
-        for y in 400..450 {
+        // Draw bar at the very bottom (last 50 pixels)
+        let bar_y_start = height - 50;
+        for y in bar_y_start..height {
             for x in 0..width {
                 unsafe {
                     let offset = y * pitch + x;
                     if x < bar_width {
                         *video_ptr.add(offset) = color;
                     } else {
-                        *video_ptr.add(offset) = 0x00333333;
+                        *video_ptr.add(offset) = 0x00333333; // Dark Grey
                     }
                 }
             }
         }
 
-        // E. ARTIFICIAL DELAY
-        // We slow down the loop so the text doesn't flicker too fast to read.
-        // This simulates "Wait for V-Sync".
-        for _ in 0..10_000_000 { core::hint::spin_loop(); }
+        // C. DELAY
+        // We keep the loop tight for responsiveness, but a small delay helps stability
+        for _ in 0..10_000 { core::hint::spin_loop(); }
     }
 }
