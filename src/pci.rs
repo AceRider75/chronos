@@ -82,3 +82,46 @@ pub fn lookup_vendor(id: u16) -> &'static str {
         _ => "Unknown",
     }
 }
+
+// ... existing code ...
+
+// NEW: Read a 32-bit double word (needed for BARs)
+pub unsafe fn pci_read_u32(bus: u8, slot: u8, func: u8, offset: u8) -> u32 {
+    let mut address_port = Port::<u32>::new(CONFIG_ADDRESS);
+    let mut data_port = Port::<u32>::new(CONFIG_DATA);
+
+    let address = 0x80000000 
+                | ((bus as u32) << 16) 
+                | ((slot as u32) << 11) 
+                | ((func as u32) << 8) 
+                | ((offset as u32) & 0xFC);
+
+    address_port.write(address);
+    data_port.read()
+}
+
+// NEW: Write a 32-bit double word
+pub unsafe fn pci_write_u32(bus: u8, slot: u8, func: u8, offset: u8, value: u32) {
+    let mut address_port = Port::<u32>::new(CONFIG_ADDRESS);
+    let mut data_port = Port::<u32>::new(CONFIG_DATA);
+
+    let address = 0x80000000 
+                | ((bus as u32) << 16) 
+                | ((slot as u32) << 11) 
+                | ((func as u32) << 8) 
+                | ((offset as u32) & 0xFC);
+
+    address_port.write(address);
+    data_port.write(value);
+}
+
+// NEW: Enable Bus Mastering
+// This sets Bit 2 in the Command Register (Offset 0x04)
+pub fn enable_bus_mastering(device: PciDevice) {
+    unsafe {
+        let command_reg = pci_read_u32(device.bus, device.device, device.function, 0x04);
+        // Set bit 2 (Bus Master) and bit 0 (IO Space)
+        let new_command = command_reg | (1 << 2) | (1 << 0);
+        pci_write_u32(device.bus, device.device, device.function, 0x04, new_command);
+    }
+}

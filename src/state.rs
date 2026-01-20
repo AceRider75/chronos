@@ -2,9 +2,10 @@ use core::sync::atomic::{AtomicU64, Ordering};
 
 pub static CYCLE_BUDGET: AtomicU64 = AtomicU64::new(2_500_000);
 pub static KEY_COUNT: AtomicU64 = AtomicU64::new(0);
-
-// NEW: Store the High Half Direct Map offset globally
 pub static HHDM_OFFSET: AtomicU64 = AtomicU64::new(0);
+
+// NEW: The specific offset for Kernel Memory (where our Heap lives)
+pub static KERNEL_DELTA: AtomicU64 = AtomicU64::new(0);
 
 pub fn adjust_budget(amount: i64) {
     let current = CYCLE_BUDGET.load(Ordering::Relaxed);

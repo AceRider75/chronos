@@ -1,4 +1,4 @@
-use crate::{input, writer, fs, userspace, gdt, memory, state, pci}; 
+use crate::{input, writer, fs, userspace, gdt, memory, state, pci, rtl8139}; 
 use alloc::string::String;
 use alloc::vec::Vec;
 use spin::Mutex;
@@ -96,7 +96,36 @@ impl Shell {
                         writer::print(&msg);
                     }
                 }
-            },            
+            },   
+            "net" => {
+                writer::print("Initializing Network...\n");
+                let devices = pci::scan_bus();
+                
+                for dev in devices {
+                    if dev.vendor_id == 0x10EC && dev.device_id == 0x8139 {
+                        pci::enable_bus_mastering(dev.clone());
+                        let  mut driver = rtl8139::Rtl8139::new(dev);
+                        driver.log_mac();
+                        
+                        writer::print("Starting Active Sniffer (Sending Heartbeats)...\n");
+                        
+                        let mut ticks = 0;
+                        loop {
+                            // 1. Check for incoming
+                            driver.sniff_packet();
+                            
+                            // 2. Send a heartbeat every ~5000 loops
+                            ticks += 1;
+                            if ticks > 5000 {
+                                driver.send_arp();
+                                ticks = 0;
+                            }
+                            
+                            for _ in 0..10_000 { core::hint::spin_loop(); }
+                        }
+                    }
+                }
+            },                  
             "exec" => {
                 writer::print("[SHELL] Launching User Mode Application...\n");
                 

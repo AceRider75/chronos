@@ -6,7 +6,7 @@
 // --- EXTERNAL CRATES ---
 extern crate alloc;
 
-use limine::request::{FramebufferRequest, HhdmRequest};
+use limine::request::{FramebufferRequest, HhdmRequest, KernelAddressRequest}; // Added KernelAddressRequest
 use limine::BaseRevision;
 use core::sync::atomic::Ordering;
 
@@ -23,6 +23,7 @@ mod gdt;
 mod userspace;
 mod memory;
 mod pci;
+mod rtl8139;
 
 // --- LIMINE REQUESTS ---
 #[used]
@@ -31,9 +32,12 @@ static BASE_REVISION: BaseRevision = BaseRevision::new();
 #[used]
 static FRAMEBUFFER_REQUEST: FramebufferRequest = FramebufferRequest::new();
 
-// Only ONE HhdmRequest in the entire program!
 #[used]
 static HHDM_REQUEST: HhdmRequest = HhdmRequest::new();
+
+// NEW: We need this to find where the Kernel is in Physical RAM
+#[used]
+static KERNEL_ADDR_REQUEST: KernelAddressRequest = KernelAddressRequest::new();
 
 // --- PANIC HANDLER ---
 #[panic_handler]
@@ -50,14 +54,18 @@ fn panic(info: &core::panic::PanicInfo) -> ! {
 // --- KERNEL ENTRY ---
 #[no_mangle]
 pub extern "C" fn _start() -> ! {
+    // -----------------------------------------------------------------------
     // 1. SYSTEM BOOTSTRAP
+    // -----------------------------------------------------------------------
     gdt::init(); 
     interrupts::init_idt();
     unsafe { interrupts::PICS.lock().initialize() };
     interrupts::enable_listening();
     x86_64::instructions::interrupts::enable(); 
 
+    // -----------------------------------------------------------------------
     // 2. VIDEO INIT
+    // -----------------------------------------------------------------------
     let framebuffer_response = FRAMEBUFFER_REQUEST.get_response().unwrap();
     let framebuffer = framebuffer_response.framebuffers().next().unwrap();
     let video_ptr = framebuffer.addr() as *mut u32;
@@ -68,48 +76,66 @@ pub extern "C" fn _start() -> ! {
     writer::Writer::init(video_ptr, width, height, pitch);
     if let Some(w) = writer::WRITER.lock().as_mut() { w.clear(); }
 
+    // -----------------------------------------------------------------------
     // 3. MEMORY INIT
+    // -----------------------------------------------------------------------
     allocator::init_heap();
 
-    // 4. VMM CONFIGURATION
-    // Get the offset from Limine and save it to Global State
+    // -----------------------------------------------------------------------
+    // 4. MEMORY MAPPING CONFIGURATION (Critical for DMA/VMM)
+    // -----------------------------------------------------------------------
+    
+    // A. Handle HHDM (Higher Half Direct Map)
     let hhdm_response = HHDM_REQUEST.get_response().unwrap();
     let hhdm_offset = hhdm_response.offset();
     state::HHDM_OFFSET.store(hhdm_offset, Ordering::Relaxed);
     
-    // Initialize the mapper (just to verify it works)
+    // B. Handle Kernel Physical Address (NEW FIX)
+    // The heap is inside the kernel binary (.bss section).
+    // To give the Network Card access, we need: Phys = Virt - Delta.
+    let kernel_response = KERNEL_ADDR_REQUEST.get_response().unwrap();
+    let k_virt = kernel_response.virtual_base();
+    let k_phys = kernel_response.physical_base();
+    let k_delta = k_virt - k_phys;
+    state::KERNEL_DELTA.store(k_delta, Ordering::Relaxed);
+
+    // Initialize VMM
     unsafe { memory::init(hhdm_offset) };
 
+    // -----------------------------------------------------------------------
     // 5. WELCOME LOGS
-    writer::print("Chronos OS v0.9\n");
-    writer::print("--------------------------------\n");
+    // -----------------------------------------------------------------------
+    writer::print("Chronos OS v0.95 - Network Enabled\n");
+    writer::print("----------------------------------\n");
     writer::print("[ OK ] Hardware Initialized\n");
+    writer::print("[ OK ] Memory Map Calculated\n");
     writer::print("[ OK ] File System Mounted\n");
-    writer::print("[INFO] Scheduler Initialized.\n\n");
     
+    // -----------------------------------------------------------------------
     // 6. SCHEDULER SETUP
+    // -----------------------------------------------------------------------
     let mut chronos_scheduler = scheduler::Scheduler::new();
 
-    // Add Shell (User Interface)
     chronos_scheduler.add_task("Shell", 100_000, shell::shell_task);
 
-    // Add Background Idle Task
     fn idle_task() { core::hint::black_box(0); }
     chronos_scheduler.add_task("Idle", 10_000, idle_task);
 
-    writer::print("> "); // Initial Prompt
+    writer::print("[ OK ] Scheduler Active.\n\n");
+    writer::print("> "); 
 
+    // -----------------------------------------------------------------------
     // 7. MAIN LOOP
+    // -----------------------------------------------------------------------
     loop {
         let start = unsafe { core::arch::x86_64::_rdtsc() };
 
-        // Run Tasks
         chronos_scheduler.execute_frame();
 
         let end = unsafe { core::arch::x86_64::_rdtsc() };
         let elapsed = end - start;
 
-        // Draw Fuel Gauge (Bottom 10 pixels)
+        // Visual Fuel Gauge
         let cycle_budget = 2_500_000;
         let mut bar_width = ((elapsed as u128 * width as u128) / cycle_budget as u128) as usize;
         if bar_width > width { bar_width = width; }
@@ -127,7 +153,6 @@ pub extern "C" fn _start() -> ! {
             }
         }
 
-        // Delay to stabilize frame rate
         for _ in 0..50_000 { core::hint::spin_loop(); }
     }
 }
