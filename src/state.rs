@@ -1,8 +1,10 @@
 use core::sync::atomic::{AtomicU64, Ordering};
 
 pub static CYCLE_BUDGET: AtomicU64 = AtomicU64::new(2_500_000);
-// NEW: A counter to prove keys are working
 pub static KEY_COUNT: AtomicU64 = AtomicU64::new(0);
+
+// NEW: Store the High Half Direct Map offset globally
+pub static HHDM_OFFSET: AtomicU64 = AtomicU64::new(0);
 
 pub fn adjust_budget(amount: i64) {
     let current = CYCLE_BUDGET.load(Ordering::Relaxed);

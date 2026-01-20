@@ -1,4 +1,5 @@
 use x86_64::structures::idt::{InterruptDescriptorTable, InterruptStackFrame, PageFaultErrorCode};
+use x86_64::PrivilegeLevel; // NEW IMPORT
 use lazy_static::lazy_static;
 use pic8259::ChainedPics;
 use spin::Mutex;
@@ -9,7 +10,7 @@ use crate::{state, input, writer};
 // --- CONFIGURATION ---
 pub const PIC_1_OFFSET: u8 = 32;
 pub const PIC_2_OFFSET: u8 = PIC_1_OFFSET + 8;
-pub const SYSCALL_IRQ: u8 = 0x80; // 128
+pub const SYSCALL_IRQ: u8 = 0x80; // Vector 128 (Linux legacy syscall)
 
 #[derive(Debug, Clone, Copy)]
 #[repr(u8)]
@@ -22,11 +23,10 @@ pub static PICS: Mutex<ChainedPics> = Mutex::new(unsafe {
     ChainedPics::new(PIC_1_OFFSET, PIC_2_OFFSET) 
 });
 
-// Helper to Unmask Interrupts
 pub fn enable_listening() {
     unsafe {
         let mut port = Port::<u8>::new(0x21);
-        port.write(0xFC); // Unmask 0 and 1
+        port.write(0xFC); 
         let mut port2 = Port::<u8>::new(0xA1);
         port2.write(0xFF);
     }
@@ -42,18 +42,17 @@ lazy_static! {
     static ref IDT: InterruptDescriptorTable = {
         let mut idt = InterruptDescriptorTable::new();
         idt.breakpoint.set_handler_fn(breakpoint_handler);
-        
-        // CRITICAL: Handle Memory Permission Errors
         idt.page_fault.set_handler_fn(page_fault_handler);
         
-        // Hardware Interrupts
         idt[InterruptIndex::Keyboard as usize].set_handler_fn(keyboard_interrupt_handler);
         idt[InterruptIndex::Timer as usize].set_handler_fn(timer_interrupt_handler);
         
-        // System Call (Future Proofing)
-        // Note: To call this from Ring 3, we would need to set DPL=3 options.
-        // For now, it just sits here ready.
-        idt[SYSCALL_IRQ as usize].set_handler_fn(syscall_handler);
+        // SYSTEM CALL (0x80)
+        // We set the Privilege Level to Ring 3.
+        // This is the GATE. It allows Ring 3 code to jump to this specific Ring 0 function.
+        idt[SYSCALL_IRQ as usize]
+            .set_handler_fn(syscall_handler)
+            .set_privilege_level(PrivilegeLevel::Ring3);
         
         idt
     };
@@ -71,32 +70,30 @@ extern "x86-interrupt" fn page_fault_handler(
     _stack_frame: InterruptStackFrame,
     error_code: PageFaultErrorCode,
 ) {
-    // If code reaches here, it means the VMM Memory Unlocking FAILED.
-    // The CPU blocked the User App from running.
-    
-    // Disable interrupts to stop the bleeding
     x86_64::instructions::interrupts::disable();
-    
     writer::print("\n\n[EXCEPTION: PAGE FAULT]\n");
-    writer::print("-----------------------\n");
-    // We can check if it was a protection violation (P) or missing page (not P)
     if error_code.contains(PageFaultErrorCode::PROTECTION_VIOLATION) {
-        writer::print("Reason: PROTECTION VIOLATION\n");
-        writer::print("Explanation: Ring 3 tried to touch Kernel Memory, and the 'USER' flag was NOT set.\n");
+        writer::print("Reason: PROTECTION VIOLATION (Ring 3 blocked)\n");
     } else {
         writer::print("Reason: PAGE NOT PRESENT\n");
     }
-    
-    let cr2 = x86_64::registers::control::Cr2::read();
-    // In a real OS, we would print the address in CR2 here using a hex formatter
-    writer::print("Crash Address: CR2 Register\n");
-    
     writer::print("SYSTEM HALTED.\n");
     loop { core::hint::spin_loop(); }
 }
 
+// THE SYSCALL HANDLER
+// This runs when User Mode calls 'int 0x80'
 extern "x86-interrupt" fn syscall_handler(_stack_frame: InterruptStackFrame) {
-    writer::print("[SYSCALL] Hello from Kernel Mode!\n");
+    // Enable interrupts briefly so printing doesn't deadlock if the writer is busy
+    x86_64::instructions::interrupts::enable();
+
+    writer::print("\n----------------------------------------\n");
+    writer::print("[KERNEL] System Call Received (Vector 80)\n");
+    writer::print("[KERNEL] Origin: User Mode (Ring 3)\n");
+    writer::print("[KERNEL] Action: User requested 'Hello World'\n");
+    writer::print("----------------------------------------\n");
+
+    // In a real OS, we would look at registers (RAX) to decide what function to run.
 }
 
 extern "x86-interrupt" fn timer_interrupt_handler(_stack_frame: InterruptStackFrame) {
