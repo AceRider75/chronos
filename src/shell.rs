@@ -116,12 +116,12 @@ impl Shell {
                             
                             // 2. Send a heartbeat every ~5000 loops
                             ticks += 1;
-                            if ticks > 5000 {
-                                driver.send_arp();
+                            if ticks > 100 {
+                                driver.send_dhcp_discover();
                                 ticks = 0;
                             }
                             
-                            for _ in 0..10_000 { core::hint::spin_loop(); }
+                            for _ in 0..50_000 { core::hint::spin_loop(); }
                         }
                     }
                 }

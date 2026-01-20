@@ -30,6 +30,103 @@ pub struct Rtl8139 {
 }
 
 impl Rtl8139 {
+    fn calc_ip_checksum(&self, header: &[u8]) -> u16 {
+        let mut sum: u32 = 0;
+        // Sum all 16-bit words
+        for i in (0..header.len()).step_by(2) {
+            let word = ((header[i] as u32) << 8) | (header[i+1] as u32);
+            sum = sum.wrapping_add(word);
+        }
+        // Add carry bits
+        while (sum >> 16) != 0 {
+            sum = (sum & 0xFFFF) + (sum >> 16);
+        }
+        // Invert
+        !sum as u16
+    }
+
+    pub fn send_dhcp_discover(&mut self) {
+        unsafe {
+            writer::print("[NET] Sending DHCP DISCOVER (With Checksum)...\n");
+
+            let mut idx = 0;
+            
+            // --- 1. ETHERNET HEADER ---
+            for _ in 0..6 { self.write_tx(idx, 0xFF); idx += 1; } // Dest
+            for i in 0..6 { self.write_tx(idx, self.mac_addr[i]); idx += 1; } // Src
+            self.write_tx(idx, 0x08); idx += 1; self.write_tx(idx, 0x00); idx += 1; // Type IP
+
+            // --- 2. IPv4 HEADER (With Checksum Calc) ---
+            // We build it in a temporary buffer first
+            let mut ip_header: [u8; 20] = [0; 20];
+            
+            ip_header[0] = 0x45; // Ver/IHL
+            ip_header[1] = 0x00; // TOS
+            // Total Length (272 bytes = 0x0110)
+            ip_header[2] = 0x01; ip_header[3] = 0x10; 
+            // ID, Flags
+            ip_header[4] = 0x00; ip_header[5] = 0x00;
+            ip_header[6] = 0x00; ip_header[7] = 0x00;
+            // TTL, Protocol (UDP)
+            ip_header[8] = 0x40; ip_header[9] = 17;
+            // Checksum (Initially 0)
+            ip_header[10] = 0x00; ip_header[11] = 0x00;
+            // Src IP (0.0.0.0)
+            ip_header[12] = 0x00; ip_header[13] = 0x00; ip_header[14] = 0x00; ip_header[15] = 0x00;
+            // Dest IP (255.255.255.255)
+            ip_header[16] = 0xFF; ip_header[17] = 0xFF; ip_header[18] = 0xFF; ip_header[19] = 0xFF;
+
+            // CALCULATE CHECKSUM
+            let csum = self.calc_ip_checksum(&ip_header);
+            ip_header[10] = (csum >> 8) as u8;
+            ip_header[11] = (csum & 0xFF) as u8;
+
+            // WRITE IP HEADER
+            for b in ip_header.iter() { self.write_tx(idx, *b); idx += 1; }
+
+            // --- 3. UDP HEADER ---
+            self.write_tx(idx, 0x00); idx += 1; self.write_tx(idx, 68); idx += 1; // Src 68
+            self.write_tx(idx, 0x00); idx += 1; self.write_tx(idx, 67); idx += 1; // Dest 67
+            self.write_tx(idx, 0x00); idx += 1; self.write_tx(idx, 0xFC); idx += 1; // Len 252
+            self.write_tx(idx, 0x00); idx += 1; self.write_tx(idx, 0x00); idx += 1; // Csum 0
+
+            // --- 4. DHCP PAYLOAD ---
+            self.write_tx(idx, 0x01); idx += 1; self.write_tx(idx, 0x01); idx += 1; // Req, Eth
+            self.write_tx(idx, 0x06); idx += 1; self.write_tx(idx, 0x00); idx += 1; // Len, Hops
+            // XID
+            self.write_tx(idx, 0x12); idx += 1; self.write_tx(idx, 0x34); idx += 1;
+            self.write_tx(idx, 0x56); idx += 1; self.write_tx(idx, 0x78); idx += 1;
+            // Secs, Flags
+            self.write_tx(idx, 0x00); idx += 1; self.write_tx(idx, 0x00); idx += 1;
+            self.write_tx(idx, 0x00); idx += 1; self.write_tx(idx, 0x00); idx += 1;
+            // IPs (CI, YI, SI, GI) -> All 0
+            for _ in 0..16 { self.write_tx(idx, 0x00); idx += 1; }
+            // MAC
+            for i in 0..6 { self.write_tx(idx, self.mac_addr[i]); idx += 1; }
+            for _ in 0..10 { self.write_tx(idx, 0x00); idx += 1; } // Pad MAC
+            // Legacy SNAME/FILE
+            for _ in 0..192 { self.write_tx(idx, 0x00); idx += 1; }
+            // Cookie
+            self.write_tx(idx, 0x63); idx += 1; self.write_tx(idx, 0x82); idx += 1;
+            self.write_tx(idx, 0x53); idx += 1; self.write_tx(idx, 0x63); idx += 1;
+            // Option 53 (Discover)
+            self.write_tx(idx, 53); idx += 1; self.write_tx(idx, 1); idx += 1; self.write_tx(idx, 1); idx += 1;
+            // Option 255 (End)
+            self.write_tx(idx, 255); idx += 1;
+
+            // Pad
+            while idx < 60 { self.write_tx(idx, 0); idx += 1; }
+
+            // SEND
+            let tsd_port_off = REG_TSD0 + (self.tx_cur as u16 * 4);
+            let tsad_port_off = REG_TSAD0 + (self.tx_cur as u16 * 4);
+            let mut tsad = Port::<u32>::new(self.io_base + tsad_port_off);
+            tsad.write(TX_BUFFER_PHYS);
+            let mut tsd = Port::<u32>::new(self.io_base + tsd_port_off);
+            tsd.write(idx as u32);
+            self.tx_cur = (self.tx_cur + 1) % 4;
+        }
+    }
     pub fn new(device: PciDevice) -> Self {
         unsafe {
             let bar0 = pci_read_u32(device.bus, device.device, device.function, 0x10);
