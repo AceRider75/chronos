@@ -3,27 +3,21 @@
 #![no_std]
 #![no_main]
 
-// --- EXTERNAL CRATES ---
 extern crate alloc;
-use alloc::boxed::Box;
-use alloc::vec::Vec;
-use alloc::string::String;
-use alloc::format;
 
 use limine::request::FramebufferRequest;
 use limine::BaseRevision;
-use core::arch::x86_64::_rdtsc;
-use core::sync::atomic::Ordering;
 
-// --- MODULES ---
 mod interrupts;
 mod state;
 mod writer;
 mod allocator;
 mod scheduler;
-mod input; // <--- NEW: Keyboard Buffer
+mod input;
 mod shell;
 mod fs;
+mod gdt;       
+mod userspace; 
 
 #[used]
 static BASE_REVISION: BaseRevision = BaseRevision::new();
@@ -37,111 +31,60 @@ fn panic(info: &core::panic::PanicInfo) -> ! {
     if let Some(location) = info.location() {
         writer::print("File: ");
         writer::print(location.file());
-        writer::print("\nLine: ");
-        writer::print("SEE SOURCE\n");
+        writer::print("\n");
     }
     loop { core::hint::spin_loop(); }
 }
 
-// --- BACKGROUND TASKS ---
-fn task_fast_math() {
-    let mut x: u64 = 0;
-    for i in 0..1000 {
-        x = x.wrapping_add(i);
-    }
-    core::hint::black_box(x); 
+fn user_mode_app() -> ! {
+    loop { core::hint::spin_loop(); }
 }
 
 #[no_mangle]
 pub extern "C" fn _start() -> ! {
-    // -----------------------------------------------------------------------
-    // 1. SYSTEM BOOTSTRAP
-    // -----------------------------------------------------------------------
+    // 1. GDT & TSS (Must be first)
+    gdt::init(); 
+
+    // 2. Interrupts
     interrupts::init_idt();
     unsafe { interrupts::PICS.lock().initialize() };
     interrupts::enable_listening();
-    x86_64::instructions::interrupts::enable();
+    
+    // NOTE: We do NOT enable CPU interrupts (sti) yet.
+    // We want the jump to be clean without timer noise.
 
-    // -----------------------------------------------------------------------
-    // 2. VIDEO INIT
-    // -----------------------------------------------------------------------
+    // 3. Video
     let framebuffer_response = FRAMEBUFFER_REQUEST.get_response().unwrap();
     let framebuffer = framebuffer_response.framebuffers().next().unwrap();
-    
     let video_ptr = framebuffer.addr() as *mut u32;
     let width = framebuffer.width() as usize;
     let height = framebuffer.height() as usize;
     let pitch = framebuffer.pitch() as usize / 4;
 
     writer::Writer::init(video_ptr, width, height, pitch);
-    
-    // Clear screen once at startup
-    if let Some(w) = writer::WRITER.lock().as_mut() {
-        w.clear();
-    }
+    if let Some(w) = writer::WRITER.lock().as_mut() { w.clear(); }
 
-    writer::print("Chronos OS v0.5 - Interactive Shell\n");
-    writer::print("-----------------------------------\n");
-
-    // -----------------------------------------------------------------------
-    // 3. MEMORY INIT
-    // -----------------------------------------------------------------------
     allocator::init_heap();
-    writer::print("[ OK ] Heap Initialized\n");
 
-    // -----------------------------------------------------------------------
-    // 4. SCHEDULER INIT
-    // -----------------------------------------------------------------------
-    let mut chronos_scheduler = scheduler::Scheduler::new();
+    // 4. Status
+    writer::print("Chronos OS v0.8 - Phase 8 Test\n");
+    writer::print("------------------------------\n");
+    writer::print("[ OK ] GDT, TSS, & Heap Ready\n");
+    writer::print("[INFO] Jumping to Ring 3 (User Mode)...\n");
 
-    // ADD TASKS:
-    // 1. The Shell (Generous budget for typing responsiveness)
-    chronos_scheduler.add_task("Shell", 100_000, shell::shell_task);
+    // 5. The Transition
+    // We get the magic numbers (selectors) that tell the CPU "Be a User"
+    let (user_code, user_data) = gdt::get_user_selectors();
 
-    // 2. Background System Check (Keep the scheduler busy)
-    chronos_scheduler.add_task("SysCheck", 50_000, task_fast_math);
+    // We call the assembly function.
+    // EXPECTATION: 
+    // 1. CPU Switches to Ring 3.
+    // 2. CPU tries to execute 'user_mode_app'.
+    // 3. CPU sees 'user_mode_app' is in Kernel Memory.
+    // 4. CPU triggers Page Fault (Vector 14).
+    // 5. Our 'page_fault_handler' prints SUCCESS.
+    userspace::jump_to_code(user_mode_app, user_code, user_data);
 
-    writer::print("[ OK ] Scheduler Active.\n");
-    writer::print("[INFO] Type 'help' for commands.\n\n");
-    writer::print("> "); // The First Prompt
-
-    // -----------------------------------------------------------------------
-    // 5. THE MAIN LOOP
-    // -----------------------------------------------------------------------
-    loop {
-        // NOTE: We REMOVED w.clear() here. 
-        // We want the text history to stay on screen!
-
-        // A. EXECUTE ALL TASKS (Including Shell)
-        chronos_scheduler.execute_frame();
-
-        // B. DRAW GLOBAL LOAD (Visual Fuel Gauge)
-        // We move this to the BOTTOM of the screen so it doesn't overwrite text.
-        let total_cost: u64 = chronos_scheduler.tasks.iter().map(|t| t.last_cost).sum();
-        let global_budget = state::CYCLE_BUDGET.load(Ordering::Relaxed);
-        
-        let mut bar_width = ((total_cost as u128 * width as u128) / global_budget as u128) as usize;
-        if bar_width > width { bar_width = width; }
-
-        let color = if bar_width < width { 0x0000FF00 } else { 0x00FF0000 };
-        
-        // Draw bar at the very bottom (last 50 pixels)
-        let bar_y_start = height - 50;
-        for y in bar_y_start..height {
-            for x in 0..width {
-                unsafe {
-                    let offset = y * pitch + x;
-                    if x < bar_width {
-                        *video_ptr.add(offset) = color;
-                    } else {
-                        *video_ptr.add(offset) = 0x00333333; // Dark Grey
-                    }
-                }
-            }
-        }
-
-        // C. DELAY
-        // We keep the loop tight for responsiveness, but a small delay helps stability
-        for _ in 0..10_000 { core::hint::spin_loop(); }
-    }
+    // Unreachable
+    loop {}
 }
