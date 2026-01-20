@@ -1,9 +1,10 @@
-use crate::{input, writer, fs, userspace, gdt, memory, state}; 
+use crate::{input, writer, fs, userspace, gdt, memory, state, pci}; 
 use alloc::string::String;
 use alloc::vec::Vec;
 use spin::Mutex;
 use lazy_static::lazy_static;
 use core::sync::atomic::Ordering;
+
 
 // DEFINE A STATIC STACK FOR THE USER APP
 // 4KB Stack size, aligned to page boundary
@@ -77,6 +78,25 @@ impl Shell {
                     writer::print("File not found.\n");
                 }
             },
+            "lspci" => {
+                writer::print("--- PCI Bus Scan ---\n");
+                let devices = pci::scan_bus();
+                
+                if devices.is_empty() {
+                    writer::print("No devices found (Is PCI enabled?)\n");
+                } else {
+                    for dev in devices {
+                        let vendor_name = pci::lookup_vendor(dev.vendor_id);
+                        
+                        // We use alloc::format! to create the string
+                        let msg = alloc::format!(
+                            "Bus {:02x} Dev {:02x} | Vendor: {:04x} ({}) | Device: {:04x}\n",
+                            dev.bus, dev.device, dev.vendor_id, vendor_name, dev.device_id
+                        );
+                        writer::print(&msg);
+                    }
+                }
+            },            
             "exec" => {
                 writer::print("[SHELL] Launching User Mode Application...\n");
                 

@@ -22,6 +22,7 @@ mod fs;
 mod gdt;
 mod userspace;
 mod memory;
+mod pci;
 
 // --- LIMINE REQUESTS ---
 #[used]
