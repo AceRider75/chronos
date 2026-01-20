@@ -3,6 +3,7 @@ use crate::{writer, state};
 use x86_64::instructions::port::Port;
 use alloc::format;
 use core::sync::atomic::Ordering;
+use crate::net;
 
 // REGISTERS
 const REG_MAC: u16 = 0x00;
@@ -213,32 +214,31 @@ impl Rtl8139 {
 
     pub fn sniff_packet(&self) {
         unsafe {
-            // DIRECT MEMORY POLLING
-            // We ignore the ISR register for now. We just check the RAM.
-            // The card writes a 16-bit status and 16-bit length at the start.
-            // If the first byte is NOT 0, the card wrote something!
-            let header_byte = core::ptr::read_volatile(self.rx_buffer_ptr);
+            // 1. Check if packet exists (header != 0)
+            let header = core::ptr::read_volatile(self.rx_buffer_ptr as *const u32);
             
-            if header_byte != 0 {
-                 writer::print("\n[NET] RAM CHANGED! PACKET DETECTED!\n");
-                 writer::print("RAW DATA: ");
-                 for i in 0..32 {
-                     let byte = core::ptr::read_volatile(self.rx_buffer_ptr.add(i));
-                     // Print ASCII if possible
-                     if byte >= 32 && byte <= 126 {
-                         let mut s = alloc::string::String::new();
-                         s.push(byte as char);
-                         writer::print(&s);
-                     } else {
-                         writer::print(".");
-                     }
-                 }
-                 writer::print("\n");
+            if header != 0 {
+                 // The RTL8139 puts a 4-byte header BEFORE the actual packet data.
+                 // Header = [Status (16 bits), Length (16 bits)]
+                 // The packet data starts at offset 4.
                  
-                 // CLEAR BUFFER MANUALLY
-                 // In a real driver we would advance the CAPR pointer.
-                 // Here we just erase the memory to "re-arm" the detector.
-                 core::ptr::write_volatile(self.rx_buffer_ptr, 0);
+                 let length = (header >> 16) as usize;
+                 
+                 // Valid length check (Ethernet min 60, max 1514)
+                 if length > 0 && length < 2000 {
+                     // Create a slice of the PACKET DATA (skip the 4-byte header)
+                     let packet_data = core::slice::from_raw_parts(
+                         self.rx_buffer_ptr.add(4), 
+                         length
+                     );
+                     
+                     // PASS TO NETWORK STACK
+                     net::handle_packet(packet_data);
+                 }
+                 
+                 // Clear buffer to wait for next packet
+                 // (In real driver, we'd move CAPR)
+                 core::ptr::write_volatile(self.rx_buffer_ptr as *mut u32, 0);
             }
         }
     }

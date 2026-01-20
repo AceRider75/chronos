@@ -24,6 +24,7 @@ mod userspace;
 mod memory;
 mod pci;
 mod rtl8139;
+mod net;
 
 // --- LIMINE REQUESTS ---
 #[used]
