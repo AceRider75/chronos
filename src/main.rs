@@ -3,11 +3,13 @@
 #![no_std]
 #![no_main]
 
+// --- EXTERNAL CRATES ---
 extern crate alloc;
 
-use limine::request::FramebufferRequest;
+use limine::request::{FramebufferRequest, HhdmRequest}; // Added HhdmRequest
 use limine::BaseRevision;
 
+// --- MODULES ---
 mod interrupts;
 mod state;
 mod writer;
@@ -16,14 +18,19 @@ mod scheduler;
 mod input;
 mod shell;
 mod fs;
-mod gdt;       
-mod userspace; 
+mod gdt;
+mod userspace;
+mod memory; // The VMM Module
 
 #[used]
 static BASE_REVISION: BaseRevision = BaseRevision::new();
 
 #[used]
 static FRAMEBUFFER_REQUEST: FramebufferRequest = FramebufferRequest::new();
+
+// Request the Higher Half Direct Map to edit Page Tables
+#[used]
+static HHDM_REQUEST: HhdmRequest = HhdmRequest::new();
 
 #[panic_handler]
 fn panic(info: &core::panic::PanicInfo) -> ! {
@@ -36,24 +43,30 @@ fn panic(info: &core::panic::PanicInfo) -> ! {
     loop { core::hint::spin_loop(); }
 }
 
+// -----------------------------------------------------------------------
+// USER MODE APPLICATION (Ring 3)
+// -----------------------------------------------------------------------
 fn user_mode_app() -> ! {
-    loop { core::hint::spin_loop(); }
+    // If the OS freezes here, it means we are successfully running in Ring 3!
+    loop {
+        core::hint::spin_loop();
+    }
 }
 
 #[no_mangle]
 pub extern "C" fn _start() -> ! {
-    // 1. GDT & TSS (Must be first)
+    // -----------------------------------------------------------------------
+    // 1. SYSTEM BOOTSTRAP
+    // -----------------------------------------------------------------------
     gdt::init(); 
-
-    // 2. Interrupts
     interrupts::init_idt();
     unsafe { interrupts::PICS.lock().initialize() };
     interrupts::enable_listening();
-    
-    // NOTE: We do NOT enable CPU interrupts (sti) yet.
-    // We want the jump to be clean without timer noise.
+    // Note: Interrupts are NOT enabled yet (cli) to keep the jump clean.
 
-    // 3. Video
+    // -----------------------------------------------------------------------
+    // 2. VIDEO & MEMORY INIT
+    // -----------------------------------------------------------------------
     let framebuffer_response = FRAMEBUFFER_REQUEST.get_response().unwrap();
     let framebuffer = framebuffer_response.framebuffers().next().unwrap();
     let video_ptr = framebuffer.addr() as *mut u32;
@@ -66,25 +79,43 @@ pub extern "C" fn _start() -> ! {
 
     allocator::init_heap();
 
-    // 4. Status
-    writer::print("Chronos OS v0.8 - Phase 8 Test\n");
-    writer::print("------------------------------\n");
-    writer::print("[ OK ] GDT, TSS, & Heap Ready\n");
-    writer::print("[INFO] Jumping to Ring 3 (User Mode)...\n");
+    writer::print("Chronos OS v0.9 - Memory Protection\n");
+    writer::print("-----------------------------------\n");
+    writer::print("[ OK ] Kernel Services Initialized\n");
 
-    // 5. The Transition
-    // We get the magic numbers (selectors) that tell the CPU "Be a User"
+    // -----------------------------------------------------------------------
+    // 3. VIRTUAL MEMORY MANAGER (VMM) SETUP
+    // -----------------------------------------------------------------------
+    // We need to tell the CPU: "Let Ring 3 touch the user_mode_app address"
+    
+    let hhdm_response = HHDM_REQUEST.get_response().unwrap();
+    let hhdm_offset = hhdm_response.offset();
+    
+    // Initialize the Page Table Mapper
+    let mut mapper = unsafe { memory::init(hhdm_offset) };
+    
+    // Calculate address of our app function
+    let app_addr = user_mode_app as usize as u64;
+    
+    writer::print("[INFO] Unlocking Memory Page for User Mode...\n");
+    
+    // Unlock the specific page where the code lives.
+    // We check the next page too just in case the function crosses a boundary.
+    memory::mark_as_user(&mut mapper, app_addr);
+    memory::mark_as_user(&mut mapper, app_addr + 4096);
+
+    writer::print("[ OK ] Page Tables Updated (USER_ACCESSIBLE flag set)\n");
+    writer::print("[INFO] Jumping to Ring 3...\n");
+
+    // -----------------------------------------------------------------------
+    // 4. THE JUMP
+    // -----------------------------------------------------------------------
     let (user_code, user_data) = gdt::get_user_selectors();
 
-    // We call the assembly function.
-    // EXPECTATION: 
-    // 1. CPU Switches to Ring 3.
-    // 2. CPU tries to execute 'user_mode_app'.
-    // 3. CPU sees 'user_mode_app' is in Kernel Memory.
-    // 4. CPU triggers Page Fault (Vector 14).
-    // 5. Our 'page_fault_handler' prints SUCCESS.
+    // Call assembly jump.
+    // SUCCESS: Screen freezes at "Jumping to Ring 3..." (Infinite loop in app)
+    // FAILURE: Page Fault Panic (if unlocking failed)
     userspace::jump_to_code(user_mode_app, user_code, user_data);
 
-    // Unreachable
     loop {}
 }
