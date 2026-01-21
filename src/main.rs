@@ -26,6 +26,7 @@ mod pci;
 mod rtl8139;
 mod net;
 mod elf;
+mod mouse;
 
 // --- LIMINE BOOTLOADER REQUESTS ---
 #[used]
@@ -82,9 +83,12 @@ pub extern "C" fn _start() -> ! {
 
     writer::Writer::init(video_ptr, width, height, pitch);
     
+    
+    
     if let Some(w) = writer::WRITER.lock().as_mut() {
         w.clear();
     }
+    mouse::init(width, height);
 
     // -----------------------------------------------------------------------
     // 3. MEMORY & VMM INIT

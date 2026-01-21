@@ -1,3 +1,4 @@
+
 use x86_64::structures::idt::{InterruptDescriptorTable, InterruptStackFrame, PageFaultErrorCode};
 use x86_64::PrivilegeLevel; // NEW IMPORT
 use lazy_static::lazy_static;
@@ -17,6 +18,7 @@ pub const SYSCALL_IRQ: u8 = 0x80; // Vector 128 (Linux legacy syscall)
 pub enum InterruptIndex {
     Timer = PIC_1_OFFSET,
     Keyboard = PIC_1_OFFSET + 1,
+    Mouse = PIC_2_OFFSET + 4,
 }
 
 pub static PICS: Mutex<ChainedPics> = Mutex::new(unsafe { 
@@ -26,9 +28,9 @@ pub static PICS: Mutex<ChainedPics> = Mutex::new(unsafe {
 pub fn enable_listening() {
     unsafe {
         let mut port = Port::<u8>::new(0x21);
-        port.write(0xFC); 
+        port.write(0xF8); 
         let mut port2 = Port::<u8>::new(0xA1);
-        port2.write(0xFF);
+        port2.write(0xEF);
     }
 }
 
@@ -45,6 +47,7 @@ lazy_static! {
         idt.page_fault.set_handler_fn(page_fault_handler);
         
         idt[InterruptIndex::Keyboard as usize].set_handler_fn(keyboard_interrupt_handler);
+        idt[InterruptIndex::Mouse as usize].set_handler_fn(mouse_interrupt_handler);
         idt[InterruptIndex::Timer as usize].set_handler_fn(timer_interrupt_handler);
         
         // SYSTEM CALL (0x80)
@@ -128,4 +131,12 @@ extern "x86-interrupt" fn keyboard_interrupt_handler(_stack_frame: InterruptStac
         }
     }
     unsafe { PICS.lock().notify_end_of_interrupt(InterruptIndex::Keyboard as u8); }
+}
+
+extern "x86-interrupt" fn mouse_interrupt_handler(_stack_frame: InterruptStackFrame) {
+    crate::mouse::handle_interrupt();
+    unsafe {
+        // Since Mouse is on Slave PIC (IRQ 12), we must notify BOTH PICs
+        PICS.lock().notify_end_of_interrupt(InterruptIndex::Mouse as u8);
+    }
 }
