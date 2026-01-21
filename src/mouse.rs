@@ -11,8 +11,11 @@ pub struct Mouse {
     packet: [u8; 3],
     pub x: usize,
     pub y: usize,
+    pub left_button: bool, // <--- NEW
     screen_width: usize,
     screen_height: usize,
+    saved_background: [u32; 100], 
+    first_draw: bool,
 }
 
 lazy_static! {
@@ -21,10 +24,22 @@ lazy_static! {
         packet: [0; 3],
         x: 512,
         y: 384,
+        left_button: false, // <--- Init false
         screen_width: 1024,
         screen_height: 768,
+        saved_background: [0; 100],
+        first_draw: true,
     });
 }
+
+pub fn get_state() -> (usize, usize, bool) {
+    if let Some(m) = MOUSE.try_lock() {
+        (m.x, m.y, m.left_button)
+    } else {
+        (0, 0, false)
+    }
+}
+
 
 // Allow the Compositor to ask where the mouse is
 pub fn get_position() -> (usize, usize) {
@@ -85,38 +100,42 @@ pub fn handle_interrupt() {
     let mut port = Port::<u8>::new(DATA_PORT);
     let byte = unsafe { port.read() };
     
-    let mut mouse = MOUSE.lock();
-    
-    match mouse.byte_cycle {
-        0 => {
-            if (byte & 0x08) != 0 {
-                mouse.packet[0] = byte;
+    // Use try_lock to prevent deadlocks with the main loop reading state
+    if let Some(mut mouse) = MOUSE.try_lock() {
+        match mouse.byte_cycle {
+            0 => {
+                if (byte & 0x08) != 0 {
+                    mouse.packet[0] = byte;
+                    mouse.byte_cycle += 1;
+                }
+            }
+            1 => {
+                mouse.packet[1] = byte;
                 mouse.byte_cycle += 1;
             }
-        }
-        1 => {
-            mouse.packet[1] = byte;
-            mouse.byte_cycle += 1;
-        }
-        2 => {
-            mouse.packet[2] = byte;
-            mouse.byte_cycle = 0;
+            2 => {
+                mouse.packet[2] = byte;
+                mouse.byte_cycle = 0;
 
-            let state = mouse.packet[0];
-            let mut dx = mouse.packet[1] as i32;
-            let mut dy = mouse.packet[2] as i32;
-            if (state & 0x10) != 0 { dx -= 256; }
-            if (state & 0x20) != 0 { dy -= 256; }
+                let state = mouse.packet[0];
+                let mut dx = mouse.packet[1] as i32;
+                let mut dy = mouse.packet[2] as i32;
+                if (state & 0x10) != 0 { dx -= 256; }
+                if (state & 0x20) != 0 { dy -= 256; }
 
-            let x = (mouse.x as i32 + dx).clamp(0, (mouse.screen_width - 5) as i32);
-            let y = (mouse.y as i32 - dy).clamp(0, (mouse.screen_height - 5) as i32);
-            
-            mouse.x = x as usize;
-            mouse.y = y as usize;
-            
-            // WE DO NOT DRAW HERE ANYMORE.
-            // The Compositor will read mouse.x/y when it is ready.
+                // Update Position
+                let x = (mouse.x as i32 + dx).clamp(0, (mouse.screen_width - 5) as i32);
+                let y = (mouse.y as i32 - dy).clamp(0, (mouse.screen_height - 5) as i32);
+                
+                mouse.x = x as usize;
+                mouse.y = y as usize;
+                
+                // NEW: Update Button State (Bit 0 of Byte 0)
+                mouse.left_button = (state & 0x01) != 0;
+
+                // (Draw logic was moved to compositor, so we are done)
+            }
+            _ => mouse.byte_cycle = 0,
         }
-        _ => mouse.byte_cycle = 0,
     }
 }

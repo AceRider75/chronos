@@ -48,7 +48,7 @@ static MEMMAP_REQUEST: MemoryMapRequest = MemoryMapRequest::new();
 // --- PANIC HANDLER ---
 #[panic_handler]
 fn panic(info: &core::panic::PanicInfo) -> ! {
-    // FIX: Use writer::print instead of self.print
+    // FIX: Use writer::print instead of writer::print
     writer::print("\n\n!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n");
     writer::print("[KERNEL PANIC]\n");
     if let Some(location) = info.location() {
@@ -114,7 +114,7 @@ pub extern "C" fn _start() -> ! {
     // Create a decorative background window (Taskbar)
     let bar = compositor::Window::new(0, height - 40, width, 40, 0xFF333333);
 
-    // FIX: Use writer::print instead of self.print
+    // FIX: Use writer::print instead of writer::print
     writer::print("Chronos OS v0.96 (GUI Enabled)\n");
     writer::print("--------------------------------\n");
     writer::print("[ OK ] HAL & Protection Initialized\n");
@@ -135,7 +135,9 @@ pub extern "C" fn _start() -> ! {
     chronos_scheduler.add_task("Idle", 10_000, idle_task);
 
     writer::print("[INFO] Entering Interactive Mode.\n");
-
+    let mut is_dragging = false;
+    let mut drag_offset_x = 0;
+    let mut drag_offset_y = 0;
     // -----------------------------------------------------------------------
     // 6. MAIN TIME-AWARE LOOP
     // -----------------------------------------------------------------------
@@ -144,18 +146,44 @@ pub extern "C" fn _start() -> ! {
 
         // Run the cooperative tasks
         chronos_scheduler.execute_frame();
+        let (mx, my, btn) = mouse::get_state();
 
         let end = unsafe { core::arch::x86_64::_rdtsc() };
         let elapsed = end - start;
 
         // --- RENDER PASS ---
         // Lock the Shell to get access to its terminal window
-        if let Some(shell_mutex) = shell::SHELL.try_lock() {
-            // Draw list: [Taskbar, Terminal]
-            // We pass this list to the compositor to draw in order
-            let windows = [&bar, &shell_mutex.window];
+        if let Some(mut shell_mutex) = shell::SHELL.try_lock() {
+            let win = &mut shell_mutex.window;
+
+            if btn {
+                // Mouse is DOWN
+                if is_dragging {
+                    // CONTINUE DRAGGING
+                    // We prevent underflow by checking if mouse > offset
+                    if mx > drag_offset_x { win.x = mx - drag_offset_x; }
+                    if my > drag_offset_y { win.y = my - drag_offset_y; }
+                } else {
+                    // CLICK START?
+                    // Check if mouse is inside the window
+                    if win.contains(mx, my) {
+                        is_dragging = true;
+                        // Calculate offset so window doesn't "snap"
+                        drag_offset_x = mx - win.x;
+                        drag_offset_y = my - win.y;
+                    }
+                }
+            } else {
+                // Mouse is UP
+                is_dragging = false;
+            }
+
+            // 3. RENDER PASS
+            // We force the taskbar to stay at bottom, but shell can move
+            // (Note: Taskbar creates a new struct every frame here, which is fine for now)
+            let current_bar = compositor::Window::new(0, height - 30, width, 30, 0xFF202020);
             
-            // FIX: Pass the windows array to render
+            let windows = [&current_bar, win];
             desktop.render(&windows);
         }
 

@@ -84,6 +84,10 @@ impl Window {
             self.draw_char(c);
         }
     }
+    pub fn contains(&self, px: usize, py: usize) -> bool {
+        px >= self.x && px < self.x + self.width &&
+        py >= self.y && py < self.y + self.height
+    }    
 
     fn draw_rect(&mut self, x: usize, y: usize, w: usize, h: usize, color: u32) {
         for i in 0..h {
@@ -97,6 +101,7 @@ impl Window {
             }
         }
     }
+
 }
 
 pub struct Compositor {
