@@ -1,6 +1,7 @@
 use noto_sans_mono_bitmap::{get_raster, RasterizedChar, FontWeight, RasterHeight};
 use spin::Mutex;
 use lazy_static::lazy_static;
+use crate::logger;
 
 // --- CONFIGURATION ---
 const LINE_SPACING: usize = 2;
@@ -74,6 +75,11 @@ impl Writer {
             self.write_char(c);
         }
     }
+    pub fn direct_print(&mut self, text: &str) {
+        for c in text.chars() {
+            self.write_char(c);
+        }
+    }    
 
     fn new_line(&mut self) {
         self.cursor_y += 16 + LINE_SPACING; // Move down by font height
@@ -139,11 +145,9 @@ impl Writer {
 
 // Helper to print from anywhere
 pub fn print(s: &str) {
-    // Disable interrupts to prevent deadlocks (e.g., keyboard interrupt tries to print 
-    // while main loop is printing)
-    x86_64::instructions::interrupts::without_interrupts(|| {
-        if let Some(writer) = WRITER.lock().as_mut() {
-            writer.write_string(s);
-        }
-    });
+    // Instead of drawing pixels, we push to the log queue!
+    logger::log(s);
+    
+    // FALLBACK: If we are in a Panic, we might want to draw directly too
+    // But for normal operation, we do NOTHING graphical here.
 }

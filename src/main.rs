@@ -29,6 +29,7 @@ mod elf;
 mod mouse;
 mod compositor;
 mod time;
+mod logger; 
 
 // --- LIMINE BOOTLOADER REQUESTS ---
 #[used]
@@ -49,15 +50,26 @@ static MEMMAP_REQUEST: MemoryMapRequest = MemoryMapRequest::new();
 // --- PANIC HANDLER ---
 #[panic_handler]
 fn panic(info: &core::panic::PanicInfo) -> ! {
-    // FIX: Use writer::print instead of writer::print
-    writer::print("\n\n!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n");
-    writer::print("[KERNEL PANIC]\n");
-    if let Some(location) = info.location() {
-        writer::print("Source: ");
-        writer::print(location.file());
-        writer::print("\n");
+    // CRITICAL: We bypass the log queue and write directly to video memory.
+    // We use try_lock() to avoid deadlocking if the crash happened *inside* the writer.
+    if let Some(mut w) = writer::WRITER.try_lock() {
+        if let Some(screen) = w.as_mut() {
+            screen.direct_print("\n\n!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n");
+            screen.direct_print("[KERNEL PANIC] System Halted\n");
+            
+            if let Some(location) = info.location() {
+                screen.direct_print("File: ");
+                screen.direct_print(location.file());
+                screen.direct_print("\nLine: ");
+                // We can't easily format numbers in panic without alloc, 
+                // so we just print the file path.
+            }
+            
+            screen.direct_print("\n!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n");
+        }
     }
-    writer::print("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n");
+    
+    // Freeze the CPU
     loop { core::hint::spin_loop(); }
 }
 
