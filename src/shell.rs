@@ -13,8 +13,9 @@ pub struct Shell {
 
 impl Shell {
     pub fn new() -> Self {
-        // Create a 800x500 Black Window
-        let mut win = compositor::Window::new(50, 50, 800, 500, 0xFF000000);
+        // Updated Constructor with Title string
+        let mut win = compositor::Window::new(50, 50, 800, 500, "Terminal");
+        
         win.print("Chronos Terminal v1.0\n");
         win.print("> ");
         
@@ -129,7 +130,7 @@ impl Shell {
                 }
             },
             "clear" => { 
-                self.window.clear(0xFF000000); 
+                self.window.clear(); 
                 self.print("> ");
             },
             "run" => {
