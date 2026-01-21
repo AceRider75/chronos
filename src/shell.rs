@@ -8,31 +8,34 @@ use core::sync::atomic::Ordering;
 
 pub struct Shell {
     command_buffer: String,
-    pub window: compositor::Window,
+    pub windows: Vec<compositor::Window>, // Multiple windows!
+    pub active_idx: usize,                // Which one gets keyboard input?
 }
 
 impl Shell {
     pub fn new() -> Self {
-        // Updated Constructor with Title string
-        let mut win = compositor::Window::new(50, 50, 800, 500, "Terminal");
+        // Create the first terminal
+        let mut win = compositor::Window::new(50, 50, 700, 400, "Terminal 1");
+        win.print("Chronos Terminal v1.0\n> ");
         
-        win.print("Chronos Terminal v1.0\n");
-        win.print("> ");
-        
+        let mut windows = Vec::new();
+        windows.push(win);
+
         Shell {
             command_buffer: String::new(),
-            window: win,
+            windows,
+            active_idx: 0,
         }
     }
 
-    // Helper to print to the window
+    // Helper to print to the ACTIVE window
     fn print(&mut self, text: &str) {
-        self.window.print(text);
+        if let Some(win) = self.windows.get_mut(self.active_idx) {
+            win.print(text);
+        }
     }
 
-    // --- MAIN TASK FUNCTION ---
     pub fn run(&mut self) {
-        // 1. Process all pending Keyboard Input
         while let Some(c) = input::pop_key() {
             match c {
                 '\n' => {
@@ -56,8 +59,7 @@ impl Shell {
             }
         }
 
-        // 2. Process all pending Kernel Logs (Network, Drivers, etc)
-        // This ensures driver output appears INSIDE the window
+        // Logs go to ALL windows? No, just the active one for now.
         let logs = logger::drain();
         for msg in logs {
             self.print(&msg);
@@ -65,20 +67,29 @@ impl Shell {
     }
 
     fn execute_command(&mut self) {
-        // FIX: Use String::from instead of to_owned()
         let cmd = String::from(self.command_buffer.trim());
         let parts: Vec<&str> = cmd.split_whitespace().collect();
-        
         if parts.is_empty() { return; }
 
         match parts[0] {
             "help" => {
-                self.print("Chronos Shell v0.6\n");
-                self.print("  ls, cat <f>    - Filesystem\n");
-                self.print("  net, ip, ping  - Networking\n");
-                self.print("  exec           - Internal Syscall Test\n");
-                self.print("  run <file>     - ELF Loader\n");
-                self.print("  clear          - Reset terminal\n");
+                self.print("Commands: ls, net, ping, run <f>, term\n");
+            },
+            
+            // NEW COMMAND: Spawn a new terminal
+            "term" => {
+                let count = self.windows.len() + 1;
+                let title = format!("Terminal {}", count);
+                // Offset position slightly so they stack nicely
+                let x = 50 + (count * 30);
+                let y = 50 + (count * 30);
+                
+                let mut win = compositor::Window::new(x, y, 700, 400, &title);
+                win.print("New Terminal Instance\n> ");
+                
+                self.windows.push(win);
+                // Switch focus to new window
+                self.active_idx = self.windows.len() - 1; 
             },
             "ls" => {
                 for file in fs::list_files() {
@@ -130,7 +141,7 @@ impl Shell {
                 }
             },
             "clear" => { 
-                self.window.clear(); 
+                self.windows.clear(); 
                 self.print("> ");
             },
             "run" => {

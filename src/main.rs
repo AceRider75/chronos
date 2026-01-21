@@ -126,44 +126,77 @@ pub extern "C" fn _start() -> ! {
 
         // B. WINDOW MANIPULATION
         if let Some(mut shell_mutex) = shell::SHELL.try_lock() {
-            let win = &mut shell_mutex.window;
+            // 1. INPUT HANDLING (Click to Focus)
+            if btn && !is_dragging {
+                // Iterate BACKWARDS to find the top-most window under the mouse
+                // (Because last drawn is on top)
+                let mut clicked_idx = None;
+                for (i, win) in shell_mutex.windows.iter().enumerate().rev() {
+                    if win.contains(mx, my) {
+                        clicked_idx = Some(i);
+                        break; // Found the top one
+                    }
+                }
 
-            if btn {
-                if is_dragging {
-                    // Apply Drag
-                    if mx > drag_offset_x { win.x = mx - drag_offset_x; }
-                    if my > drag_offset_y { win.y = my - drag_offset_y; }
-                } else {
-                    // Check for Title Bar Click
+                if let Some(idx) = clicked_idx {
+                    // Update Active Index logic
+                    // If we move the window in the Vec, we must update active_idx
+                    if idx != shell_mutex.active_idx {
+                        shell_mutex.active_idx = idx;
+                    }
+                    
+                    // START DRAG
+                    let win = &shell_mutex.windows[idx];
                     if win.is_title_bar(mx, my) {
                         is_dragging = true;
                         drag_offset_x = mx - win.x;
                         drag_offset_y = my - win.y;
                     }
                 }
-            } else {
+            } else if !btn {
                 is_dragging = false;
             }
 
-            // C. UPDATE TASKBAR CLOCK
-            // FIX 2: Pass string title here too
-            let mut taskbar = compositor::Window::new(0, height - 30, width, 30, "Taskbar");
+            // 2. DRAGGING LOGIC
+            if is_dragging {
+                let idx = shell_mutex.active_idx;
+                if let Some(win) = shell_mutex.windows.get_mut(idx) {
+                    if mx > drag_offset_x { win.x = mx - drag_offset_x; }
+                    if my > drag_offset_y { win.y = my - drag_offset_y; }
+                }
+            }
+
+            // 3. RENDER PASS
+            // We need to construct a list of references for the compositor
+            let mut draw_list: alloc::vec::Vec<&compositor::Window> = alloc::vec::Vec::new();
             
+            // Add Taskbar (Always at bottom/back)
+            let taskbar = compositor::Window::new(0, height - 30, width, 30, "Taskbar");
+            // Add Time to Taskbar
             let time = time::read_rtc();
             use alloc::format;
             let time_str = format!("{:02}:{:02}:{:02}", time.hours, time.minutes, time.seconds);
+            // We need a mutable reference to print, but Window::new gives owned. 
+            // Window::new returns 'mut' by value, so we need to bind it mutably.
+            let mut taskbar_mut = taskbar;
+            taskbar_mut.cursor_x = width - 100;
+            taskbar_mut.cursor_y = 5;
+            taskbar_mut.print(&time_str);
             
-            taskbar.cursor_x = width - 100;
-            taskbar.cursor_y = 5; 
-            taskbar.print(&time_str);
+            draw_list.push(&taskbar_mut);
 
-            // D. RENDER PASS
-            // Draw order: Taskbar Background -> Shell Window -> Taskbar Clock Overlay
-            // (Actually we just draw taskbar and shell. The taskbar var we just made has the clock)
-            let windows = [&taskbar, win];
-            desktop.render(&windows);
+            // Add all Shell Windows
+            // We want the ACTIVE window to be drawn LAST (On Top)
+            // But we don't want to shuffle the actual Vec every frame (expensive).
+            // For this simple OS, we just draw in order. 
+            // (If you want true Z-order, we need to swap elements in the shell.windows Vec).
+            
+            for win in &shell_mutex.windows {
+                draw_list.push(win);
+            }
+
+            desktop.render(&draw_list);
         }
-
         // E. FUEL GAUGE OVERLAY
         let end = unsafe { core::arch::x86_64::_rdtsc() };
         let elapsed = end - start;
