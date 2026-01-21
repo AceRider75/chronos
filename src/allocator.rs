@@ -10,8 +10,8 @@ static ALLOCATOR: LockedHeap = LockedHeap::empty();
 // 2. DEFINE THE MEMORY REGION
 // Instead of scanning RAM, we reserve a big chunk of memory 
 // inside our own kernel binary to act as the heap.
-// 100 KiB size.
-pub const HEAP_SIZE: usize = 100 * 1024; 
+// 32 MiB size.
+pub const HEAP_SIZE: usize = 32 * 1024 * 1024; 
 
 // We use 'static mut' to allocate space in the BSS section.
 // This is effectively a big array of zero bytes.

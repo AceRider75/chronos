@@ -27,6 +27,7 @@ mod rtl8139;
 mod net;
 mod elf;
 mod mouse;
+mod compositor;
 
 // --- LIMINE BOOTLOADER REQUESTS ---
 #[used]
@@ -74,12 +75,12 @@ pub extern "C" fn _start() -> ! {
     // 2. VIDEO INIT
     // -----------------------------------------------------------------------
     let framebuffer_response = FRAMEBUFFER_REQUEST.get_response().unwrap();
-    let framebuffer = framebuffer_response.framebuffers().next().unwrap();
-    
-    let video_ptr = framebuffer.addr() as *mut u32;
-    let width = framebuffer.width() as usize;
-    let height = framebuffer.height() as usize;
-    let pitch = framebuffer.pitch() as usize / 4;
+    let fb = framebuffer_response.framebuffers().next().unwrap();
+
+    let video_ptr = fb.addr() as *mut u32;
+    let width = fb.width() as usize;
+    let height = fb.height() as usize;
+    let pitch = fb.pitch() as usize / 4;
 
     writer::Writer::init(video_ptr, width, height, pitch);
     
@@ -88,7 +89,8 @@ pub extern "C" fn _start() -> ! {
     if let Some(w) = writer::WRITER.lock().as_mut() {
         w.clear();
     }
-    mouse::init(width, height);
+
+
 
     // -----------------------------------------------------------------------
     // 3. MEMORY & VMM INIT
@@ -116,6 +118,13 @@ pub extern "C" fn _start() -> ! {
     writer::print("[ OK ] HAL & Protection Initialized\n");
     writer::print("[ OK ] VMM & Physical Memory Manager Online\n");
     writer::print("[ OK ] Filesystem & Network Stack Ready\n");
+    mouse::init(width, height);
+    let mut desktop = compositor::Compositor::new(width, height);
+    let win1 = compositor::Window::new(100, 100, 300, 200, 0xFF880000);
+    desktop.add_window(win1);
+    let win2 = compositor::Window::new(200, 200, 200, 200, 0xFF008800);
+    desktop.add_window(win2);
+    writer::print("[ OK ] Compositor Initialized\n");
     
     // -----------------------------------------------------------------------
     // 5. SCHEDULER SETUP
@@ -151,6 +160,7 @@ pub extern "C" fn _start() -> ! {
 
         let color = if bar_width < width { 0x0000FF00 } else { 0x00FF0000 };
         let bar_y_start = height - 10;
+        desktop.render();
 
         for y in bar_y_start..height {
             for x in 0..width {
