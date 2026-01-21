@@ -48,6 +48,7 @@ static MEMMAP_REQUEST: MemoryMapRequest = MemoryMapRequest::new();
 // --- PANIC HANDLER ---
 #[panic_handler]
 fn panic(info: &core::panic::PanicInfo) -> ! {
+    // FIX: Use writer::print instead of self.print
     writer::print("\n\n!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n");
     writer::print("[KERNEL PANIC]\n");
     if let Some(location) = info.location() {
@@ -84,46 +85,41 @@ pub extern "C" fn _start() -> ! {
 
     writer::Writer::init(video_ptr, width, height, pitch);
     
-    
-    
     if let Some(w) = writer::WRITER.lock().as_mut() {
         w.clear();
     }
-
-
 
     // -----------------------------------------------------------------------
     // 3. MEMORY & VMM INIT
     // -----------------------------------------------------------------------
     allocator::init_heap();
 
-    // Get memory information from Limine
     let hhdm_offset = HHDM_REQUEST.get_response().unwrap().offset();
     let memmap = MEMMAP_REQUEST.get_response().unwrap();
     let kernel_response = KERNEL_ADDR_REQUEST.get_response().unwrap();
 
-    // Store global offsets for Driver/Shell use
     state::HHDM_OFFSET.store(hhdm_offset, Ordering::Relaxed);
     state::KERNEL_DELTA.store(kernel_response.virtual_base() - kernel_response.physical_base(), Ordering::Relaxed);
 
-    // Initialize Virtual Memory Manager with the Memory Map
-    // This allows the OS to allocate physical RAM to build new page tables.
     unsafe { memory::init(hhdm_offset, memmap) };
 
     // -----------------------------------------------------------------------
-    // 4. STATUS REPORT
+    // 4. GUI & COMPOSITOR INIT
     // -----------------------------------------------------------------------
-    writer::print("Chronos OS v0.95 (Build: Era 2)\n");
-    writer::print("----------------------------------------\n");
+    mouse::init(width, height);
+    
+    // Create the Compositor
+    let mut desktop = compositor::Compositor::new(width, height);
+    
+    // Create a decorative background window (Taskbar)
+    let bar = compositor::Window::new(0, height - 40, width, 40, 0xFF333333);
+
+    // FIX: Use writer::print instead of self.print
+    writer::print("Chronos OS v0.96 (GUI Enabled)\n");
+    writer::print("--------------------------------\n");
     writer::print("[ OK ] HAL & Protection Initialized\n");
     writer::print("[ OK ] VMM & Physical Memory Manager Online\n");
     writer::print("[ OK ] Filesystem & Network Stack Ready\n");
-    mouse::init(width, height);
-    let mut desktop = compositor::Compositor::new(width, height);
-    let win1 = compositor::Window::new(100, 100, 300, 200, 0xFF880000);
-    desktop.add_window(win1);
-    let win2 = compositor::Window::new(200, 200, 200, 200, 0xFF008800);
-    desktop.add_window(win2);
     writer::print("[ OK ] Compositor Initialized\n");
     
     // -----------------------------------------------------------------------
@@ -138,8 +134,7 @@ pub extern "C" fn _start() -> ! {
     fn idle_task() { core::hint::black_box(0); }
     chronos_scheduler.add_task("Idle", 10_000, idle_task);
 
-    writer::print("[INFO] Entering Interactive Mode.\n\n");
-    writer::print("> "); 
+    writer::print("[INFO] Entering Interactive Mode.\n");
 
     // -----------------------------------------------------------------------
     // 6. MAIN TIME-AWARE LOOP
@@ -153,14 +148,25 @@ pub extern "C" fn _start() -> ! {
         let end = unsafe { core::arch::x86_64::_rdtsc() };
         let elapsed = end - start;
 
-        // Visual Fuel Gauge (Last 10 pixels of the screen)
+        // --- RENDER PASS ---
+        // Lock the Shell to get access to its terminal window
+        if let Some(shell_mutex) = shell::SHELL.try_lock() {
+            // Draw list: [Taskbar, Terminal]
+            // We pass this list to the compositor to draw in order
+            let windows = [&bar, &shell_mutex.window];
+            
+            // FIX: Pass the windows array to render
+            desktop.render(&windows);
+        }
+
+        // --- FUEL GAUGE ---
+        // We draw this *directly* to video memory (Overlay)
         let cycle_budget = 2_500_000;
         let mut bar_width = ((elapsed as u128 * width as u128) / cycle_budget as u128) as usize;
         if bar_width > width { bar_width = width; }
 
         let color = if bar_width < width { 0x0000FF00 } else { 0x00FF0000 };
         let bar_y_start = height - 10;
-        desktop.render();
 
         for y in bar_y_start..height {
             for x in 0..width {
@@ -169,13 +175,13 @@ pub extern "C" fn _start() -> ! {
                     if x < bar_width {
                         *video_ptr.add(offset) = color;
                     } else {
-                        *video_ptr.add(offset) = 0x00151515; // Subtle background
+                        // Don't draw background here, let compositor handle it
                     }
                 }
             }
         }
 
         // Stability delay
-        for _ in 0..50_000 { core::hint::spin_loop(); }
+        // for _ in 0..50_000 { core::hint::spin_loop(); }
     }
 }
