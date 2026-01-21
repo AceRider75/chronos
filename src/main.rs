@@ -6,7 +6,7 @@
 // --- EXTERNAL CRATES ---
 extern crate alloc;
 
-use limine::request::{FramebufferRequest, HhdmRequest, KernelAddressRequest}; // Added KernelAddressRequest
+use limine::request::{FramebufferRequest, HhdmRequest, ExecutableAddressRequest, MemoryMapRequest}; 
 use limine::BaseRevision;
 use core::sync::atomic::Ordering;
 
@@ -25,8 +25,9 @@ mod memory;
 mod pci;
 mod rtl8139;
 mod net;
+mod elf;
 
-// --- LIMINE REQUESTS ---
+// --- LIMINE BOOTLOADER REQUESTS ---
 #[used]
 static BASE_REVISION: BaseRevision = BaseRevision::new();
 
@@ -36,27 +37,31 @@ static FRAMEBUFFER_REQUEST: FramebufferRequest = FramebufferRequest::new();
 #[used]
 static HHDM_REQUEST: HhdmRequest = HhdmRequest::new();
 
-// NEW: We need this to find where the Kernel is in Physical RAM
 #[used]
-static KERNEL_ADDR_REQUEST: KernelAddressRequest = KernelAddressRequest::new();
+static KERNEL_ADDR_REQUEST: ExecutableAddressRequest = ExecutableAddressRequest::new();
+
+#[used]
+static MEMMAP_REQUEST: MemoryMapRequest = MemoryMapRequest::new();
 
 // --- PANIC HANDLER ---
 #[panic_handler]
 fn panic(info: &core::panic::PanicInfo) -> ! {
-    writer::print("\n\n[KERNEL PANIC]\n");
+    writer::print("\n\n!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n");
+    writer::print("[KERNEL PANIC]\n");
     if let Some(location) = info.location() {
-        writer::print("File: ");
+        writer::print("Source: ");
         writer::print(location.file());
         writer::print("\n");
     }
+    writer::print("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n");
     loop { core::hint::spin_loop(); }
 }
 
-// --- KERNEL ENTRY ---
+// --- KERNEL ENTRY POINT ---
 #[no_mangle]
 pub extern "C" fn _start() -> ! {
     // -----------------------------------------------------------------------
-    // 1. SYSTEM BOOTSTRAP
+    // 1. HARDWARE ABSTRACTION LAYER (HAL) INIT
     // -----------------------------------------------------------------------
     gdt::init(); 
     interrupts::init_idt();
@@ -69,74 +74,73 @@ pub extern "C" fn _start() -> ! {
     // -----------------------------------------------------------------------
     let framebuffer_response = FRAMEBUFFER_REQUEST.get_response().unwrap();
     let framebuffer = framebuffer_response.framebuffers().next().unwrap();
+    
     let video_ptr = framebuffer.addr() as *mut u32;
     let width = framebuffer.width() as usize;
     let height = framebuffer.height() as usize;
     let pitch = framebuffer.pitch() as usize / 4;
 
     writer::Writer::init(video_ptr, width, height, pitch);
-    if let Some(w) = writer::WRITER.lock().as_mut() { w.clear(); }
+    
+    if let Some(w) = writer::WRITER.lock().as_mut() {
+        w.clear();
+    }
 
     // -----------------------------------------------------------------------
-    // 3. MEMORY INIT
+    // 3. MEMORY & VMM INIT
     // -----------------------------------------------------------------------
     allocator::init_heap();
 
-    // -----------------------------------------------------------------------
-    // 4. MEMORY MAPPING CONFIGURATION (Critical for DMA/VMM)
-    // -----------------------------------------------------------------------
-    
-    // A. Handle HHDM (Higher Half Direct Map)
-    let hhdm_response = HHDM_REQUEST.get_response().unwrap();
-    let hhdm_offset = hhdm_response.offset();
-    state::HHDM_OFFSET.store(hhdm_offset, Ordering::Relaxed);
-    
-    // B. Handle Kernel Physical Address (NEW FIX)
-    // The heap is inside the kernel binary (.bss section).
-    // To give the Network Card access, we need: Phys = Virt - Delta.
+    // Get memory information from Limine
+    let hhdm_offset = HHDM_REQUEST.get_response().unwrap().offset();
+    let memmap = MEMMAP_REQUEST.get_response().unwrap();
     let kernel_response = KERNEL_ADDR_REQUEST.get_response().unwrap();
-    let k_virt = kernel_response.virtual_base();
-    let k_phys = kernel_response.physical_base();
-    let k_delta = k_virt - k_phys;
-    state::KERNEL_DELTA.store(k_delta, Ordering::Relaxed);
 
-    // Initialize VMM
-    unsafe { memory::init(hhdm_offset) };
+    // Store global offsets for Driver/Shell use
+    state::HHDM_OFFSET.store(hhdm_offset, Ordering::Relaxed);
+    state::KERNEL_DELTA.store(kernel_response.virtual_base() - kernel_response.physical_base(), Ordering::Relaxed);
+
+    // Initialize Virtual Memory Manager with the Memory Map
+    // This allows the OS to allocate physical RAM to build new page tables.
+    unsafe { memory::init(hhdm_offset, memmap) };
 
     // -----------------------------------------------------------------------
-    // 5. WELCOME LOGS
+    // 4. STATUS REPORT
     // -----------------------------------------------------------------------
-    writer::print("Chronos OS v0.95 - Network Enabled\n");
-    writer::print("----------------------------------\n");
-    writer::print("[ OK ] Hardware Initialized\n");
-    writer::print("[ OK ] Memory Map Calculated\n");
-    writer::print("[ OK ] File System Mounted\n");
+    writer::print("Chronos OS v0.95 (Build: Era 2)\n");
+    writer::print("----------------------------------------\n");
+    writer::print("[ OK ] HAL & Protection Initialized\n");
+    writer::print("[ OK ] VMM & Physical Memory Manager Online\n");
+    writer::print("[ OK ] Filesystem & Network Stack Ready\n");
     
     // -----------------------------------------------------------------------
-    // 6. SCHEDULER SETUP
+    // 5. SCHEDULER SETUP
     // -----------------------------------------------------------------------
     let mut chronos_scheduler = scheduler::Scheduler::new();
 
+    // Shell Task (Priority)
     chronos_scheduler.add_task("Shell", 100_000, shell::shell_task);
 
+    // Idle Task (Background)
     fn idle_task() { core::hint::black_box(0); }
     chronos_scheduler.add_task("Idle", 10_000, idle_task);
 
-    writer::print("[ OK ] Scheduler Active.\n\n");
+    writer::print("[INFO] Entering Interactive Mode.\n\n");
     writer::print("> "); 
 
     // -----------------------------------------------------------------------
-    // 7. MAIN LOOP
+    // 6. MAIN TIME-AWARE LOOP
     // -----------------------------------------------------------------------
     loop {
         let start = unsafe { core::arch::x86_64::_rdtsc() };
 
+        // Run the cooperative tasks
         chronos_scheduler.execute_frame();
 
         let end = unsafe { core::arch::x86_64::_rdtsc() };
         let elapsed = end - start;
 
-        // Visual Fuel Gauge
+        // Visual Fuel Gauge (Last 10 pixels of the screen)
         let cycle_budget = 2_500_000;
         let mut bar_width = ((elapsed as u128 * width as u128) / cycle_budget as u128) as usize;
         if bar_width > width { bar_width = width; }
@@ -148,12 +152,16 @@ pub extern "C" fn _start() -> ! {
             for x in 0..width {
                 unsafe {
                     let offset = y * pitch + x;
-                    if x < bar_width { *video_ptr.add(offset) = color; } 
-                    else { *video_ptr.add(offset) = 0x00333333; }
+                    if x < bar_width {
+                        *video_ptr.add(offset) = color;
+                    } else {
+                        *video_ptr.add(offset) = 0x00151515; // Subtle background
+                    }
                 }
             }
         }
 
+        // Stability delay
         for _ in 0..50_000 { core::hint::spin_loop(); }
     }
 }

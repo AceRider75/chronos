@@ -2,24 +2,24 @@ use core::arch::asm;
 use crate::gdt;
 
 // UPDATED: Now accepts 'stack_ptr'
-pub fn jump_to_code(function_ptr: fn() -> !, code_sel: u16, data_sel: u16, stack_ptr: u64) -> ! {
+pub fn jump_to_code_raw(entry_ptr: u64, code_sel: u16, data_sel: u16, stack_ptr: u64) -> ! {
     unsafe {
-        asm!(
+        core::arch::asm!(
             "cli",
             "mov ds, ax",
             "mov es, ax",
             "mov fs, ax",
             "mov gs, ax",
-            "push rax",          // SS
-            "push rsi",          // RSP (We use the passed stack_ptr)
-            "push 0x202",        // RFLAGS (Interrupts Enabled)
-            "push rdi",          // CS
-            "push rdx",          // RIP
+            "push rax",
+            "push rsi",
+            "push 0x202",
+            "push rdi",
+            "push rdx",
             "iretq",
             in("ax") data_sel,
             in("rdi") code_sel,
-            in("rsi") stack_ptr, // Input register for stack
-            in("rdx") function_ptr,
+            in("rsi") stack_ptr,
+            in("rdx") entry_ptr,
             options(noreturn)
         );
     }

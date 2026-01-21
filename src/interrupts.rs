@@ -71,12 +71,23 @@ extern "x86-interrupt" fn page_fault_handler(
     error_code: PageFaultErrorCode,
 ) {
     x86_64::instructions::interrupts::disable();
+    
+    // Read the address that caused the crash
+    let cr2 = x86_64::registers::control::Cr2::read();
+
     writer::print("\n\n[EXCEPTION: PAGE FAULT]\n");
+    writer::print("-----------------------\n");
+    
+    // Print the address in Hex
+    use alloc::format;
+    writer::print(&format!("Accessed Address (CR2): {:x}\n", cr2));
+    
     if error_code.contains(PageFaultErrorCode::PROTECTION_VIOLATION) {
         writer::print("Reason: PROTECTION VIOLATION (Ring 3 blocked)\n");
     } else {
-        writer::print("Reason: PAGE NOT PRESENT\n");
+        writer::print("Reason: PAGE NOT PRESENT (Mapping missing)\n");
     }
+    
     writer::print("SYSTEM HALTED.\n");
     loop { core::hint::spin_loop(); }
 }
