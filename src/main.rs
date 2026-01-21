@@ -28,6 +28,7 @@ mod net;
 mod elf;
 mod mouse;
 mod compositor;
+mod time;
 
 // --- LIMINE BOOTLOADER REQUESTS ---
 #[used]
@@ -182,8 +183,17 @@ pub extern "C" fn _start() -> ! {
             // We force the taskbar to stay at bottom, but shell can move
             // (Note: Taskbar creates a new struct every frame here, which is fine for now)
             let current_bar = compositor::Window::new(0, height - 30, width, 30, 0xFF202020);
+            let mut taskbar = compositor::Window::new(0, height - 30, width, 30, 0xFF202020);
+            let time = time::read_rtc();
+            use alloc::format;
+            let time_str = format!("{:02}:{:02}:{:02}", time.hours, time.minutes, time.seconds);
             
+            // Position cursor at bottom right
+            taskbar.cursor_x = width - 100;
+            taskbar.cursor_y = 5; 
+            taskbar.print(&time_str); // Draw time onto taskbar            
             let windows = [&current_bar, win];
+            let windows = [&taskbar, win];
             desktop.render(&windows);
         }
 
