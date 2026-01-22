@@ -232,7 +232,32 @@ impl Shell {
                 } else {
                     writer::print("[ERROR] Could not mount FAT32.\n");
                 }
-            },                
+            },  
+            "catdisk" => {
+                if parts.len() < 2 {
+                    writer::print("Usage: catdisk <filename>\n");
+                } else {
+                    let filename = parts[1];
+                    writer::print(&format!("[DISK] Reading '{}' from HDD...\n", filename));
+                    
+                    if let Some(fs) = crate::fat::Fat32::new() {
+                        if let Some(data) = fs.read_file(filename) {
+                            // Try to print as string
+                            if let Ok(s) = alloc::string::String::from_utf8(data) {
+                                writer::print("--- FILE START ---\n");
+                                writer::print(&s);
+                                writer::print("\n--- FILE END ---\n");
+                            } else {
+                                writer::print("[Binary Data]\n");
+                            }
+                        } else {
+                            writer::print("File not found on disk.\n");
+                        }
+                    } else {
+                        writer::print("[ERROR] Mount failed.\n");
+                    }
+                }
+            },                          
             "ip" => {
                 let ip = state::get_my_ip();
                 self.print(&format!("IP: {}.{}.{}.{}\n", ip[0], ip[1], ip[2], ip[3]));

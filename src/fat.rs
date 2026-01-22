@@ -2,9 +2,9 @@ use crate::ata;
 use crate::writer;
 use alloc::vec::Vec;
 use alloc::string::String;
+use alloc::format;
 
-// --- STRUCTS (Packed for Disk Layout) ---
-
+// --- STRUCTS ---
 #[repr(C, packed)]
 #[derive(Debug, Clone, Copy)]
 struct BPB {
@@ -22,7 +22,6 @@ struct BPB {
     num_heads: u16,
     hidden_sectors: u32,
     total_sectors_32: u32,
-    // FAT32 Specific
     fat_size_32: u32,
     ext_flags: u16,
     fs_version: u16,
@@ -41,8 +40,8 @@ struct BPB {
 #[repr(C, packed)]
 #[derive(Debug, Clone, Copy)]
 struct DirectoryEntry {
-    name: [u8; 11],     
-    attr: u8,           
+    name: [u8; 11],
+    attr: u8,
     nt_res: u8,
     create_time_tenth: u8,
     create_time: u16,
@@ -58,41 +57,36 @@ struct DirectoryEntry {
 pub struct Fat32 {
     drive: ata::AtaDrive,
     partition_offset: u32,
-    data_start: u32,       
+    data_start: u32,
     sectors_per_cluster: u32,
     root_cluster: u32,
-    bytes_per_cluster: u32,
 }
 
 impl Fat32 {
     pub fn new() -> Option<Self> {
-        let drive = ata::AtaDrive::new(true); // Master
+        let drive = ata::AtaDrive::new(true);
         if !drive.identify() { return None; }
 
         let sector0 = drive.read_sectors(0, 1);
         let bpb = unsafe { &*(sector0.as_ptr() as *const BPB) };
 
-        // FIX: Accessing fields of packed structs is tricky. 
-        // We copy the values out to local variables first.
-        // This avoids the "unaligned reference" error.
-        let bytes_per_sector = bpb.bytes_per_sector;
-        let root_cluster = bpb.root_cluster;
-        let reserved_sectors = bpb.reserved_sectors as u32;
-        let fat_size = bpb.fat_size_32;
+        // Copy packed values to avoid unaligned access
+        let bytes_per_sec = bpb.bytes_per_sector;
+        let rsvd_sec = bpb.reserved_sectors as u32;
         let num_fats = bpb.num_fats as u32;
+        let fat32_size = bpb.fat_size_32;
+        let root_cluster = bpb.root_cluster;
         let spc = bpb.sectors_per_cluster as u32;
 
-        if bytes_per_sector != 512 {
-            writer::print("[FAT] Error: Non-512 byte sectors not supported.\n");
+        if bytes_per_sec != 512 {
+            writer::print("[FAT] Error: Non-512 byte sectors.\n");
             return None;
         }
 
-        // CALCULATE OFFSETS
-        let fat_area_size = num_fats * fat_size;
-        let data_start = reserved_sectors + fat_area_size;
-        
-        // Use the local variable 'root_cluster', not 'bpb.root_cluster'
-        writer::print(&alloc::format!("[FAT] Found Volume. Root Cluster: {}\n", root_cluster));
+        let fat_area_size = num_fats * fat32_size;
+        let data_start = rsvd_sec + fat_area_size;
+
+        writer::print(&format!("[FAT] Mounted. Root Cluster: {}\n", root_cluster));
 
         Some(Fat32 {
             drive,
@@ -100,40 +94,80 @@ impl Fat32 {
             data_start,
             sectors_per_cluster: spc,
             root_cluster,
-            bytes_per_cluster: spc * 512,
         })
+    }
+
+    // Helper: 8.3 filename ("README  TXT") -> ("README.TXT")
+    fn format_name(raw: &[u8; 11]) -> String {
+        let name = core::str::from_utf8(&raw[0..8]).unwrap_or("").trim();
+        let ext = core::str::from_utf8(&raw[8..11]).unwrap_or("").trim();
+        if ext.is_empty() {
+            String::from(name)
+        } else {
+            format!("{}.{}", name, ext)
+        }
     }
 
     pub fn list_root(&self) {
         let root_lba = self.cluster_to_lba(self.root_cluster);
-        
-        // Read one cluster
         let data = self.drive.read_sectors(root_lba, self.sectors_per_cluster as u8);
         
-        writer::print("--- HARD DRIVE FILES ---\n");
+        writer::print("--- HDD FILES ---\n");
 
         for i in (0..data.len()).step_by(32) {
             if i + 32 > data.len() { break; }
-            
             let entry = unsafe { &*(data.as_ptr().add(i) as *const DirectoryEntry) };
 
-            if entry.name[0] == 0x00 { break; } // End
-            if entry.name[0] == 0xE5 { continue; } // Deleted
-            if entry.attr == 0x0F { continue; } // LFN
+            if entry.name[0] == 0x00 { break; }
+            if entry.name[0] == 0xE5 { continue; }
+            if entry.attr == 0x0F { continue; } // Long File Name skip
 
-            // Copy out size (u32) to avoid unaligned reference error
             let size = entry.size;
+            let name_str = Self::format_name(&entry.name);
             
-            // Handle Name (It's a byte array, so references are usually safe, but let's be careful)
-            let name = core::str::from_utf8(&entry.name).unwrap_or("INVALID");
-            let is_dir = (entry.attr & 0x10) != 0;
-            
-            if is_dir {
-                writer::print(&alloc::format!("[DIR]  {}\n", name));
+            if (entry.attr & 0x10) != 0 {
+                writer::print(&format!("[DIR]  {}\n", name_str));
             } else {
-                writer::print(&alloc::format!("[FILE] {} ({} bytes)\n", name, size));
+                writer::print(&format!("[FILE] {} ({} bytes)\n", name_str, size));
             }
         }
+    }
+
+    pub fn read_file(&self, filename: &str) -> Option<Vec<u8>> {
+        let root_lba = self.cluster_to_lba(self.root_cluster);
+        let data = self.drive.read_sectors(root_lba, self.sectors_per_cluster as u8);
+
+        // 1. Find the file entry
+        for i in (0..data.len()).step_by(32) {
+            if i + 32 > data.len() { break; }
+            let entry = unsafe { &*(data.as_ptr().add(i) as *const DirectoryEntry) };
+
+            if entry.name[0] == 0x00 { break; }
+            if entry.name[0] == 0xE5 || entry.attr == 0x0F { continue; }
+
+            let name_str = Self::format_name(&entry.name);
+            
+            // Case-insensitive match
+            if name_str.eq_ignore_ascii_case(filename) {
+                // FOUND IT!
+                let cluster = ((entry.cluster_high as u32) << 16) | (entry.cluster_low as u32);
+                let size = entry.size as usize;
+                
+                // Read the cluster data
+                // NOTE: This only reads the FIRST cluster (usually 4KB). 
+                // Larger files need FAT table lookup (Linked List).
+                let file_lba = self.cluster_to_lba(cluster);
+                let raw_data = self.drive.read_sectors(file_lba, self.sectors_per_cluster as u8);
+                
+                // Trim to actual size
+                if size < raw_data.len() {
+                    return Some(raw_data[0..size].to_vec());
+                } else {
+                    return Some(raw_data);
+                }
+            }
+        }
+        None
     }
 
     fn cluster_to_lba(&self, cluster: u32) -> u32 {
