@@ -92,6 +92,8 @@ pub extern "C" fn _start() -> ! {
     state::KERNEL_DELTA.store(kernel_response.virtual_base() - kernel_response.physical_base(), Ordering::Relaxed);
 
     unsafe { memory::init(hhdm_offset, memmap) };
+    fs::init();
+    writer::print("[ OK ] Virtual Filesystem Initialized\n");    
 
     // 4. GUI INIT
     mouse::init(width, height);

@@ -97,11 +97,53 @@ impl Shell {
                     self.print(&msg);
                 }
             },
+            "touch" => {
+                if parts.len() < 2 { self.print("Usage: touch <filename>\n"); } 
+                else {
+                    fs::create_file(parts[1]);
+                    self.print("File created.\n");
+                }
+            },
+
+            "rm" => {
+                if parts.len() < 2 { self.print("Usage: rm <filename>\n"); } 
+                else {
+                    fs::delete_file(parts[1]);
+                    self.print("File deleted.\n");
+                }
+            },
+
+            "write" => {
+                // Usage: write filename "text goes here"
+                if parts.len() < 3 { 
+                    self.print("Usage: write <file> <word>\n"); 
+                } else {
+                    let filename = parts[1];
+                    // Join the rest of the parts as the content
+                    // (Simple impl: just writes the first word for now, or loop to join)
+                    let content = parts[2]; 
+                    
+                    if fs::append_file(filename, content.as_bytes()) {
+                        // Add a newline for neatness
+                        fs::append_file(filename, b"\n");
+                        self.print("Data written.\n");
+                    } else {
+                        self.print("File not found.\n");
+                    }
+                }
+            },
+            
+            // Update 'cat' to handle Vec<u8> properly
             "cat" => {
                 if parts.len() < 2 { self.print("Usage: cat <filename>\n"); } 
-                else if let Some(content) = fs::read_file(parts[1]) {
-                    self.print(&content);
-                    self.print("\n");
+                else if let Some(data) = fs::read_file(parts[1]) {
+                    // Try convert to string
+                    if let Ok(s) = alloc::string::String::from_utf8(data) {
+                        self.print(&s);
+                        self.print("\n");
+                    } else {
+                        self.print("[Binary Data]\n");
+                    }
                 } else { self.print("File not found.\n"); }
             },
             "ip" => {
