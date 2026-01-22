@@ -1,4 +1,4 @@
-use crate::{input, writer, fs, userspace, gdt, memory, state, pci, rtl8139, elf, compositor, logger, scheduler}; 
+use crate::{input, writer, fs, userspace, gdt, memory, state, pci, rtl8139, elf, compositor, logger, scheduler, ata}; 
 use alloc::string::String;
 use alloc::vec::Vec;
 use alloc::format;
@@ -181,6 +181,50 @@ impl Shell {
                     } else { self.print("File not found.\n"); }
                 }
             },
+"disk" => {
+                let drive = ata::AtaDrive::new(true); // Master Drive
+                if drive.identify() {
+                    self.print("[DISK] ATA Master Drive Detected.\n");
+                    
+                    if parts.len() > 2 && parts[1] == "write" {
+                        // FIX: Combine all parts starting from index 2
+                        let content = parts[2..].join(" "); 
+                        let data = content.as_bytes();
+                        
+                        // Prepare 512-byte buffer
+                        let mut sector = [0u8; 512];
+                        for (i, &b) in data.iter().enumerate() {
+                            if i < 512 { sector[i] = b; }
+                        }
+                        
+                        self.print(&format!("[DISK] Writing '{}' to Sector 0...\n", content));
+                        drive.write_sectors(0, &sector);
+                        self.print("[DISK] Write complete.\n");
+                    } 
+                    else if parts.len() > 1 && parts[1] == "read" {
+                        self.print("[DISK] Reading Sector 0...\n");
+                        let data = drive.read_sectors(0, 1);
+                        
+                        self.print("Data: ");
+                        for i in 0..512 { // Scan whole sector
+                            let c = data[i];
+                            if c == 0 { break; } // Stop at null terminator
+                            if c >= 32 && c <= 126 {
+                                let mut s = String::new();
+                                s.push(c as char);
+                                self.print(&s);
+                            } else {
+                                self.print(".");
+                            }
+                        }
+                        self.print("\n");
+                    } else {
+                        self.print("Usage: disk read | disk write <text>\n");
+                    }
+                } else {
+                    self.print("[DISK] No drive found.\n");
+                }
+            },      
             "ip" => {
                 let ip = state::get_my_ip();
                 self.print(&format!("IP: {}.{}.{}.{}\n", ip[0], ip[1], ip[2], ip[3]));

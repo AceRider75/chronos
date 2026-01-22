@@ -28,6 +28,7 @@ mod mouse;
 mod compositor;
 mod time;
 mod logger;
+mod ata;
 
 #[used]
 static BASE_REVISION: BaseRevision = BaseRevision::new();
