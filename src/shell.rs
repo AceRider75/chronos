@@ -181,7 +181,7 @@ impl Shell {
                     } else { self.print("File not found.\n"); }
                 }
             },
-"disk" => {
+            "disk" => {
                 let drive = ata::AtaDrive::new(true); // Master Drive
                 if drive.identify() {
                     self.print("[DISK] ATA Master Drive Detected.\n");
@@ -224,7 +224,15 @@ impl Shell {
                 } else {
                     self.print("[DISK] No drive found.\n");
                 }
-            },      
+            },  
+            "lsdisk" => {
+                writer::print("[SHELL] Mounting HDD (FAT32)...\n");
+                if let Some(fs) = crate::fat::Fat32::new() {
+                    fs.list_root();
+                } else {
+                    writer::print("[ERROR] Could not mount FAT32.\n");
+                }
+            },                
             "ip" => {
                 let ip = state::get_my_ip();
                 self.print(&format!("IP: {}.{}.{}.{}\n", ip[0], ip[1], ip[2], ip[3]));

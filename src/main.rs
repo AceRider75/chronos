@@ -29,6 +29,7 @@ mod compositor;
 mod time;
 mod logger;
 mod ata;
+mod fat;
 
 #[used]
 static BASE_REVISION: BaseRevision = BaseRevision::new();
