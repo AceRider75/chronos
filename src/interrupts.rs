@@ -1,17 +1,17 @@
-
 use x86_64::structures::idt::{InterruptDescriptorTable, InterruptStackFrame, PageFaultErrorCode};
-use x86_64::PrivilegeLevel; // NEW IMPORT
+use x86_64::PrivilegeLevel;
 use lazy_static::lazy_static;
 use pic8259::ChainedPics;
 use spin::Mutex;
 use x86_64::instructions::port::Port;
 use pc_keyboard::{layouts, DecodedKey, HandleControl, Keyboard, ScancodeSet1};
 use crate::{state, input, writer};
+use core::sync::atomic::Ordering; // <--- ADD THIS
 
 // --- CONFIGURATION ---
 pub const PIC_1_OFFSET: u8 = 32;
 pub const PIC_2_OFFSET: u8 = PIC_1_OFFSET + 8;
-pub const SYSCALL_IRQ: u8 = 0x80; // Vector 128 (Linux legacy syscall)
+pub const SYSCALL_IRQ: u8 = 0x80;
 
 #[derive(Debug, Clone, Copy)]
 #[repr(u8)]
@@ -51,8 +51,6 @@ lazy_static! {
         idt[InterruptIndex::Timer as usize].set_handler_fn(timer_interrupt_handler);
         
         // SYSTEM CALL (0x80)
-        // We set the Privilege Level to Ring 3.
-        // This is the GATE. It allows Ring 3 code to jump to this specific Ring 0 function.
         idt[SYSCALL_IRQ as usize]
             .set_handler_fn(syscall_handler)
             .set_privilege_level(PrivilegeLevel::Ring3);
@@ -75,13 +73,11 @@ extern "x86-interrupt" fn page_fault_handler(
 ) {
     x86_64::instructions::interrupts::disable();
     
-    // Read the address that caused the crash
     let cr2 = x86_64::registers::control::Cr2::read();
 
     writer::print("\n\n[EXCEPTION: PAGE FAULT]\n");
     writer::print("-----------------------\n");
     
-    // Print the address in Hex
     use alloc::format;
     writer::print(&format!("Accessed Address (CR2): {:x}\n", cr2));
     
@@ -96,22 +92,58 @@ extern "x86-interrupt" fn page_fault_handler(
 }
 
 // THE SYSCALL HANDLER
-// This runs when User Mode calls 'int 0x80'
 extern "x86-interrupt" fn syscall_handler(_stack_frame: InterruptStackFrame) {
-    // Enable interrupts briefly so printing doesn't deadlock if the writer is busy
     x86_64::instructions::interrupts::enable();
 
-    writer::print("\n----------------------------------------\n");
-    writer::print("[KERNEL] System Call Received (Vector 80)\n");
-    writer::print("[KERNEL] Origin: User Mode (Ring 3)\n");
-    writer::print("[KERNEL] Action: User requested 'Hello World'\n");
-    writer::print("----------------------------------------\n");
+    // 1. Get Video Info
+    let video_addr = state::VIDEO_PTR.load(Ordering::Relaxed);
+    let width = state::SCREEN_WIDTH.load(Ordering::Relaxed);
+    let height = state::SCREEN_HEIGHT.load(Ordering::Relaxed);
 
-    // In a real OS, we would look at registers (RAX) to decide what function to run.
+    if video_addr != 0 {
+        let video_ptr = video_addr as *mut u32;
+
+        // 2. Draw a Blue Box in the Center (400x200)
+        let box_w = 400;
+        let box_h = 200;
+        let start_x = (width - box_w) / 2;
+        let start_y = (height - box_h) / 2;
+
+        for y in 0..box_h {
+            for x in 0..box_w {
+                let offset = (start_y + y) * width + (start_x + x);
+                unsafe { 
+                    // Draw Blue Background with White Border
+                    if x < 5 || x > box_w-5 || y < 5 || y > box_h-5 {
+                        *video_ptr.add(offset) = 0xFFFFFF; // White Border
+                    } else {
+                        *video_ptr.add(offset) = 0x0000AA; // Dark Blue
+                    }
+                }
+            }
+        }
+    }
+
+    // 3. Print Text (Using Writer to handle font rendering)
+    // We force the cursor to the center of our new box
+    if let Some(mut w) = writer::WRITER.try_lock() {
+        if let Some(screen) = w.as_mut() {
+            let start_x = (width - 400) / 2;
+            let start_y = (height - 200) / 2;
+            
+            screen.cursor_x = start_x + 20;
+            screen.cursor_y = start_y + 80;
+            screen.direct_print("APP EXECUTION SUCCESSFUL!");
+            
+            screen.cursor_x = start_x + 50;
+            screen.cursor_y = start_y + 110;
+            screen.direct_print("Syscall 0x80 Received.");
+        }
+    }
 }
 
 extern "x86-interrupt" fn timer_interrupt_handler(_stack_frame: InterruptStackFrame) {
-    state::KEY_COUNT.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+    state::KEY_COUNT.fetch_add(1, Ordering::Relaxed);
     unsafe { PICS.lock().notify_end_of_interrupt(InterruptIndex::Timer as u8); }
 }
 
@@ -120,7 +152,7 @@ extern "x86-interrupt" fn keyboard_interrupt_handler(_stack_frame: InterruptStac
     let mut port = Port::new(0x60);
     let scancode: u8 = unsafe { port.read() };
 
-    state::KEY_COUNT.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+    state::KEY_COUNT.fetch_add(1, Ordering::Relaxed);
 
     if let Ok(Some(key_event)) = keyboard.add_byte(scancode) {
         if let Some(key) = keyboard.process_keyevent(key_event) {
@@ -136,7 +168,6 @@ extern "x86-interrupt" fn keyboard_interrupt_handler(_stack_frame: InterruptStac
 extern "x86-interrupt" fn mouse_interrupt_handler(_stack_frame: InterruptStackFrame) {
     crate::mouse::handle_interrupt();
     unsafe {
-        // Since Mouse is on Slave PIC (IRQ 12), we must notify BOTH PICs
         PICS.lock().notify_end_of_interrupt(InterruptIndex::Mouse as u8);
     }
 }

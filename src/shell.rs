@@ -257,7 +257,49 @@ impl Shell {
                         writer::print("[ERROR] Mount failed.\n");
                     }
                 }
-            },                          
+            },  
+            "rundisk" => {
+                if parts.len() < 2 { self.print("Usage: rundisk <file>\n"); } 
+                else {
+                    if let Some(file_data) = fs::read_file(parts[1]) {
+                        self.print("[LOADER] Loading from HDD into new RAM pages...\n");
+                        
+                        let user_virt_base = 0x400_000;
+                        unsafe {
+                            // 1. Allocate and map 8 fresh pages (32KB)
+                            for i in 0..8 {
+                                let v = user_virt_base + (i * 4096);
+                                let p = memory::alloc_frame().as_u64();
+                                memory::map_user_page(v, p);
+
+                                // 2. Copy data from the file into the virtual address
+                                let offset = i as usize * 4096;
+                                if offset < file_data.len() {
+                                    let chunk = core::cmp::min(file_data.len() - offset, 4096);
+                                    core::ptr::copy_nonoverlapping(
+                                        file_data.as_ptr().add(offset),
+                                        v as *mut u8,
+                                        chunk
+                                    );
+                                }
+                            }
+
+                            // 3. Setup Stack (Mapped at 0x800000)
+                            let stack_virt = 0x800_000;
+                            memory::map_user_page(stack_virt, memory::alloc_frame().as_u64());
+                            
+                            // 4. Get entry point
+                            let raw_entry = *(file_data.as_ptr().add(24) as *const u64);
+                            let target = if raw_entry >= user_virt_base { raw_entry } else { user_virt_base + raw_entry };
+
+                            self.print(&format!("[LOADER] Jumping to Ring 3 at {:x}\n", target));
+                            
+                            let (code, data) = gdt::get_user_selectors();
+                            userspace::jump_to_code_raw(target, code, data, stack_virt + 4096);
+                        }
+                    } else { self.print("File not found on HDD.\n"); }
+                }
+            },                                    
             "ip" => {
                 let ip = state::get_my_ip();
                 self.print(&format!("IP: {}.{}.{}.{}\n", ip[0], ip[1], ip[2], ip[3]));

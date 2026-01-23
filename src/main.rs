@@ -45,12 +45,23 @@ static MEMMAP_REQUEST: MemoryMapRequest = MemoryMapRequest::new();
 #[panic_handler]
 fn panic(info: &core::panic::PanicInfo) -> ! {
     writer::print("\n\n!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n");
-    writer::print("[KERNEL PANIC]\n");
+    writer::print("[KERNEL PANIC] SYSTEM HALTED\n");
+    
+    // FIX: Just use the message directly, it's not an Option anymore
+    use alloc::format;
+    writer::print(&format!("Error: {}\n", info.message()));
+
     if let Some(location) = info.location() {
-        writer::print("Source: ");
+        writer::print("File: ");
         writer::print(location.file());
-        writer::print("\n");
+        
+        // We can now format the line number too!
+        writer::print(&format!("\nLine: {}", location.line()));
+    } else {
+        writer::print("\nUnknown Location");
     }
+    
+    writer::print("\n!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n");
     loop { core::hint::spin_loop(); }
 }
 
@@ -70,6 +81,11 @@ pub extern "C" fn _start() -> ! {
     let width = fb.width() as usize;
     let height = fb.height() as usize;
     let pitch = fb.pitch() as usize / 4;
+
+    // SAVE VIDEO STATE
+    state::VIDEO_PTR.store(video_ptr as u64, Ordering::Relaxed);
+    state::SCREEN_WIDTH.store(width, Ordering::Relaxed);
+    state::SCREEN_HEIGHT.store(height, Ordering::Relaxed);
 
     writer::Writer::init(video_ptr, width, height, pitch);
     if let Some(w) = writer::WRITER.lock().as_mut() { w.clear(); }

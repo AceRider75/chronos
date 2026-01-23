@@ -112,24 +112,27 @@ impl Fat32 {
         let root_lba = self.cluster_to_lba(self.root_cluster);
         let data = self.drive.read_sectors(root_lba, self.sectors_per_cluster as u8);
         
-        writer::print("--- HDD FILES ---\n");
+        writer::print("--- RAW DISK DUMP ---\n");
 
         for i in (0..data.len()).step_by(32) {
             if i + 32 > data.len() { break; }
             let entry = unsafe { &*(data.as_ptr().add(i) as *const DirectoryEntry) };
 
-            if entry.name[0] == 0x00 { break; }
-            if entry.name[0] == 0xE5 { continue; }
-            if entry.attr == 0x0F { continue; } // Long File Name skip
-
-            let size = entry.size;
-            let name_str = Self::format_name(&entry.name);
+            // DEBUG: Print the first byte of every entry
+            let first_byte = entry.name[0];
+            let attr = entry.attr;
             
-            if (entry.attr & 0x10) != 0 {
-                writer::print(&format!("[DIR]  {}\n", name_str));
-            } else {
-                writer::print(&format!("[FILE] {} ({} bytes)\n", name_str, size));
+            // 0x00 = End, 0xE5 = Deleted
+            if first_byte == 0x00 { 
+                writer::print(&alloc::format!("[IDX {:02}] END MARKER (00)\n", i/32));
+                break; 
             }
+            
+            // Print raw name bytes
+            let name = core::str::from_utf8(&entry.name).unwrap_or("INVALID");
+            
+            writer::print(&alloc::format!("[IDX {:02}] {:02x} | Attr: {:02x} | Name: {}\n", 
+                i/32, first_byte, attr, name));
         }
     }
 
