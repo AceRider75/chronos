@@ -209,6 +209,8 @@ pub extern "C" fn _start() -> ! {
             for win in shell_mutex.windows.iter_mut() {
                 if win.title == "System Monitor" {
                     shell::Shell::update_monitor(win);
+                } else if win.title == "File Explorer" {
+                    shell::Shell::update_explorer(win, &shell_mutex.current_dir);
                 }
             }
 

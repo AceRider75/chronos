@@ -1,5 +1,5 @@
 use crate::{input, writer, fs, userspace, gdt, memory, state, pci, rtl8139, elf, compositor, logger, scheduler, ata}; 
-use alloc::string::String;
+use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 use alloc::vec; // Import vec! macro
 use alloc::format;
@@ -12,6 +12,7 @@ pub struct Shell {
     pub windows: Vec<compositor::Window>,
     pub active_idx: usize,
     last_spawn_time: u64,
+    pub current_dir: String,
 }
 
 const MAX_WINDOWS: usize = 15;
@@ -29,6 +30,7 @@ impl Shell {
             windows,
             active_idx: 0,
             last_spawn_time: 0,
+            current_dir: "/".to_string(),
         }
     }
 
@@ -124,9 +126,132 @@ impl Shell {
                 }
             },
             "ls" => {
-                for file in fs::list_files() {
-                    self.print(&format!("- {} ({} bytes)\n", file.name, file.data.len()));
+                if let Some(items) = fs::ls(&self.current_dir) {
+                    for (name, is_dir) in items {
+                        if is_dir {
+                            self.print(&format!("[DIR]  {}\n", name));
+                        } else {
+                            self.print(&format!("[FILE] {}\n", name));
+                        }
+                    }
+                } else {
+                    self.print("Error: Could not list directory.\n");
                 }
+            },
+            "cd" => {
+                if parts.len() < 2 {
+                    self.print("Usage: cd <path>\n");
+                } else {
+                    let path = parts[1];
+                    if path == ".." {
+                        if self.current_dir != "/" {
+                            if let Some(idx) = self.current_dir.trim_end_matches('/').rfind('/') {
+                                self.current_dir = self.current_dir[..idx+1].to_string();
+                                if self.current_dir.len() > 1 {
+                                    self.current_dir.pop();
+                                }
+                            }
+                        }
+                    } else if path == "/" {
+                        self.current_dir = "/".to_string();
+                    } else {
+                        let new_path = if self.current_dir == "/" {
+                            format!("/{}", path)
+                        } else {
+                            format!("{}/{}", self.current_dir, path)
+                        };
+                        if fs::ls(&new_path).is_some() {
+                            self.current_dir = new_path;
+                        } else {
+                            self.print("Error: Directory not found.\n");
+                        }
+                    }
+                }
+            },
+            "mkdir" => {
+                if parts.len() < 2 {
+                    self.print("Usage: mkdir <name>\n");
+                } else {
+                    if fs::mkdir(&self.current_dir, parts[1]) {
+                        self.print(&format!("Directory '{}' created.\n", parts[1]));
+                    } else {
+                        self.print("Error: Could not create directory.\n");
+                    }
+                }
+            },
+            "rm" => {
+                if parts.len() < 2 {
+                    self.print("Usage: rm <name>\n");
+                } else {
+                    if fs::rm(&self.current_dir, parts[1]) {
+                        self.print(&format!("Removed '{}'.\n", parts[1]));
+                    } else {
+                        self.print("Error: Could not remove item.\n");
+                    }
+                }
+            },
+            "cat" => {
+                if parts.len() < 2 {
+                    self.print("Usage: cat <file>\n");
+                } else {
+                    if let Some(data) = fs::read(&self.current_dir, parts[1]) {
+                        if let Ok(s) = String::from_utf8(data) {
+                            self.print(&s);
+                            self.print("\n");
+                        } else {
+                            self.print("[Binary Data]\n");
+                        }
+                    } else {
+                        self.print("Error: File not found.\n");
+                    }
+                }
+            },
+            "write" => {
+                if parts.len() < 3 {
+                    self.print("Usage: write <file> <text>\n");
+                } else {
+                    let text = parts[2..].join(" ");
+                    if fs::touch(&self.current_dir, parts[1], text.into_bytes()) {
+                        self.print(&format!("File '{}' written.\n", parts[1]));
+                    } else {
+                        self.print("Error: Could not write file.\n");
+                    }
+                }
+            },
+            "grep" => {
+                if parts.len() < 3 {
+                    self.print("Usage: grep <pattern> <file>\n");
+                } else {
+                    let pattern = parts[1];
+                    if let Some(data) = fs::read(&self.current_dir, parts[2]) {
+                        if let Ok(s) = String::from_utf8(data) {
+                            for line in s.lines() {
+                                if line.contains(pattern) {
+                                    self.print(line);
+                                    self.print("\n");
+                                }
+                            }
+                        } else {
+                            self.print("Error: Cannot grep binary file.\n");
+                        }
+                    } else {
+                        self.print("Error: File not found.\n");
+                    }
+                }
+            },
+            "touch" => {
+                if parts.len() < 2 {
+                    self.print("Usage: touch <file>\n");
+                } else {
+                    if fs::touch(&self.current_dir, parts[1], Vec::new()) {
+                        self.print(&format!("File '{}' created.\n", parts[1]));
+                    } else {
+                        self.print("Error: Could not create file.\n");
+                    }
+                }
+            },
+            "pwd" => {
+                self.print(&format!("{}\n", self.current_dir));
             },
             "term" => self.spawn_terminal(),
             "browser" => {
@@ -201,6 +326,15 @@ impl Shell {
                         }
                     }
                 }
+            },
+            "fm" | "explorer" => {
+                if self.windows.len() >= MAX_WINDOWS {
+                    self.print("Error: Maximum window limit reached.\n");
+                    return;
+                }
+                let mut win = compositor::Window::new(150, 150, 500, 400, "File Explorer");
+                self.windows.push(win);
+                self.active_idx = self.windows.len() - 1;
             },
             "run" => {
                 if parts.len() < 2 { self.print("Usage: run <filename>\n"); } else {
@@ -397,25 +531,37 @@ impl Shell {
             
             let mut bar = String::from("[");
             for _ in 0..bar_len { bar.push('#'); }
-            for _ in 0..(10 - bar_len) { bar.push('.'); }
+            for _ in 0..(10 - bar_len) { bar.push(' '); }
             bar.push(']');
 
-            let status = match task.status {
-                scheduler::TaskStatus::Success => "OK",
-                scheduler::TaskStatus::Failure => "FAIL",
-                _ => "..",
-            };
-
-            let safe_name = if task.name.len() > 8 { &task.name[0..8] } else { &task.name };
-
-            let line = format!("{:02}  {:<8}  {:<8} {}\n", 
-                i, safe_name, task.last_cost, status);
-            
-            win.print(&line);
-            win.print("    "); 
-            win.print(&bar);
-            win.print("\n");
+            win.print(&format!("{:02}  {:<10}  {}  {}\n", 
+                i, 
+                task.name, 
+                bar,
+                if task.status == scheduler::TaskStatus::Success { "OK" } else { "FAIL" }
+            ));
         }
+    }
+
+    pub fn update_explorer(win: &mut compositor::Window, current_dir: &str) {
+        win.clear();
+        win.print(&format!("EXPLORER: {}\n", current_dir));
+        win.print("----------------------------------\n\n");
+
+        if let Some(items) = fs::ls(current_dir) {
+            for (name, is_dir) in items {
+                if is_dir {
+                    win.print(&format!(" [DIR]  {}\n", name));
+                } else {
+                    win.print(&format!(" [FILE] {}\n", name));
+                }
+            }
+        } else {
+            win.print("Error: Could not list directory.\n");
+        }
+        
+        win.print("\n----------------------------------\n");
+        win.print("Double-click to open (Simulated)\n");
     }
 }
 
@@ -529,6 +675,8 @@ pub fn resume_shell() -> ! {
             for win in shell_mutex.windows.iter_mut() {
                 if win.title == "System Monitor" {
                     Shell::update_monitor(win);
+                } else if win.title == "File Explorer" {
+                    Shell::update_explorer(win, &shell_mutex.current_dir);
                 }
             }
 
