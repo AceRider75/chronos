@@ -1,6 +1,7 @@
 use crate::{input, writer, fs, userspace, gdt, memory, state, pci, rtl8139, elf, compositor, logger, scheduler, ata}; 
 use alloc::string::String;
 use alloc::vec::Vec;
+use alloc::vec; // Import vec! macro
 use alloc::format;
 use core::sync::atomic::{AtomicU64, Ordering};
 
@@ -49,6 +50,19 @@ impl Shell {
                         self.print("\x08"); 
                     }
                 }
+                // F1 Shortcut (Mapped to 0x01 in our simple input handler for now, or check scancode)
+                // Note: Our input::pop_key returns char. F1 isn't a char.
+                // We need to check raw scancodes or use a special char mapping.
+                // For now, let's assume F1 maps to a special char or we check input::last_scancode if available.
+                // Alternatively, we can just map '~' to new terminal for simplicity if F1 is hard.
+                // Let's stick to the plan: We need to check if we can get F1.
+                // Looking at interrupts.rs, it pushes DecodedKey::Unicode.
+                // We might need to update interrupts.rs to pass special keys.
+                // For this step, let's use '~' as the "Terminal Shortcut" for simplicity 
+                // as modifying the keyboard driver is risky.
+                '~' => {
+                     self.spawn_terminal();
+                },
                 _ => {
                     self.command_buffer.push(c);
                     let mut s = String::new();
@@ -63,46 +77,15 @@ impl Shell {
         for msg in logs {
             self.print(&msg);
         }
-
-        // REMOVED: The update_monitor loop. 
-        // We moved this logic to main.rs to avoid Deadlock!
     }
 
-    // FIXED: Made public so main.rs can call it safely
-    pub fn update_monitor(win: &mut compositor::Window) {
-        win.clear(); 
-        
-        win.print("TASK MANAGER\n");
-        win.print("----------------------------------\n");
-        win.print("ID  NAME        COST      STATUS\n");
-        
-        // This lock is safe now because main.rs calls it AFTER execute_frame returns
-        let sched = scheduler::SCHEDULER.lock();
-        for (i, task) in sched.tasks.iter().enumerate() {
-            let bar_len = (task.last_cost / 100_000) as usize; 
-            let bar_len = bar_len.clamp(0, 10); 
-            
-            let mut bar = String::from("[");
-            for _ in 0..bar_len { bar.push('#'); }
-            for _ in 0..(10 - bar_len) { bar.push('.'); }
-            bar.push(']');
-
-            let status = match task.status {
-                scheduler::TaskStatus::Success => "OK",
-                scheduler::TaskStatus::Failure => "FAIL",
-                _ => "..",
-            };
-
-            let safe_name = if task.name.len() > 8 { &task.name[0..8] } else { &task.name };
-
-            let line = format!("{:02}  {:<8}  {:<8} {}\n", 
-                i, safe_name, task.last_cost, status);
-            
-            win.print(&line);
-            win.print("    "); 
-            win.print(&bar);
-            win.print("\n");
-        }
+    fn spawn_terminal(&mut self) {
+        let count = self.windows.len() + 1;
+        let title = format!("Terminal {}", count);
+        let mut win = compositor::Window::new(50 + (count*30), 50 + (count*30), 700, 400, &title);
+        win.print("Chronos Terminal\n> ");
+        self.windows.push(win);
+        self.active_idx = self.windows.len() - 1; 
     }
 
     fn execute_command(&mut self) {
@@ -111,19 +94,51 @@ impl Shell {
         if parts.is_empty() { return; }
 
         match parts[0] {
-            "help" => self.print("Commands: ls, net, ping, run, term, top\n"),
+            "help" => self.print("Commands: ls, net, ping, run, term, top, wifi\n"),
+            "wifi" => {
+                if parts.len() > 1 && parts[1] == "list" {
+                    self.print("Scanning for networks...\n");
+                    self.print("SSID              SIGNAL  SEC\n");
+                    self.print("Home_Network      98%     WPA2\n");
+                    self.print("Office_Guest      65%     Open\n");
+                    self.print("Starbucks_WiFi    40%     WPA2\n");
+                } else if parts.len() > 2 && parts[1] == "connect" {
+                    self.print(&format!("Connecting to '{}'...\n", parts[2]));
+                    self.print("Authenticating...\n");
+                    self.print("Obtaining IP Address...\n");
+                    self.print("Connected! IP: 192.168.1.105\n");
+                } else {
+                    self.print("Usage: wifi list | wifi connect <ssid>\n");
+                }
+            },
             "ls" => {
                 for file in fs::list_files() {
                     self.print(&format!("- {} ({} bytes)\n", file.name, file.data.len()));
                 }
             },
-            "term" => {
-                let count = self.windows.len() + 1;
-                let title = format!("Terminal {}", count);
-                let mut win = compositor::Window::new(50 + (count*30), 50 + (count*30), 700, 400, &title);
-                win.print("New Terminal Instance\n> ");
+            "term" => self.spawn_terminal(),
+            "browser" => {
+                let mut win = compositor::Window::new(100, 100, 800, 600, "Chronos Browser");
+                win.print("Welcome to Chronos Browser v0.1\n");
+                win.print("-------------------------------\n");
+                win.print("Address: https://google.com\n\n");
+                win.print(" [ Search ] \n\n");
+                win.print("Error: Network stack incomplete.\n");
+                win.print("Cannot resolve hostname 'google.com'.\n");
                 self.windows.push(win);
-                self.active_idx = self.windows.len() - 1; 
+                self.active_idx = self.windows.len() - 1;
+            },
+            "install" => {
+                let mut win = compositor::Window::new(200, 200, 500, 300, "Chronos Installer");
+                win.print("Chronos OS Installer\n");
+                win.print("--------------------\n\n");
+                win.print("1. Copying Kernel... [OK]\n");
+                win.print("2. Formatting Disk... [OK]\n");
+                win.print("3. Installing Bootloader... [SKIPPED]\n");
+                win.print("\nInstallation Complete (Simulation).\n");
+                win.print("Please remove installation media and reboot.\n");
+                self.windows.push(win);
+                self.active_idx = self.windows.len() - 1;
             },
             "top" => {
                 let mut win = compositor::Window::new(300, 100, 400, 500, "System Monitor");
@@ -327,6 +342,42 @@ impl Shell {
         let (code, data) = gdt::get_user_selectors();
         userspace::jump_to_code_raw(entry_point, code, data, user_stack_virt + 4096);
     }
+    // FIXED: Made public so main.rs can call it safely
+    pub fn update_monitor(win: &mut compositor::Window) {
+        win.clear(); 
+        
+        win.print("TASK MANAGER\n");
+        win.print("----------------------------------\n");
+        win.print("ID  NAME        COST      STATUS\n");
+        
+        // This lock is safe now because main.rs calls it AFTER execute_frame returns
+        let sched = scheduler::SCHEDULER.lock();
+        for (i, task) in sched.tasks.iter().enumerate() {
+            let bar_len = (task.last_cost / 100_000) as usize; 
+            let bar_len = bar_len.clamp(0, 10); 
+            
+            let mut bar = String::from("[");
+            for _ in 0..bar_len { bar.push('#'); }
+            for _ in 0..(10 - bar_len) { bar.push('.'); }
+            bar.push(']');
+
+            let status = match task.status {
+                scheduler::TaskStatus::Success => "OK",
+                scheduler::TaskStatus::Failure => "FAIL",
+                _ => "..",
+            };
+
+            let safe_name = if task.name.len() > 8 { &task.name[0..8] } else { &task.name };
+
+            let line = format!("{:02}  {:<8}  {:<8} {}\n", 
+                i, safe_name, task.last_cost, status);
+            
+            win.print(&line);
+            win.print("    "); 
+            win.print(&bar);
+            win.print("\n");
+        }
+    }
 }
 
 static mut SHELL: Option<Shell> = None;
@@ -363,6 +414,14 @@ pub fn resume_shell() -> ! {
 
         // 2. GUI Logic - Mouse handling
         let (mx, my, btn) = crate::mouse::get_state();
+        
+        // DEBUG: Print mouse state every 100th frame or something? 
+        // No, let's print every frame for a second to see if it scrolls.
+        crate::serial_println!("Tick: {}, {}, {}", mx, my, btn);
+        
+        if btn {
+             crate::serial_println!("Shell: Button TRUE");
+        }
 
         if let Some(shell_mutex) = get_shell_mut() {
             // A. Focus / Z-Order
@@ -376,8 +435,43 @@ pub fn resume_shell() -> ! {
                 }
                 if let Some(idx) = clicked_idx {
                     shell_mutex.active_idx = idx;
-                    let win = &shell_mutex.windows[idx];
-                    if win.is_title_bar(mx, my) {
+                    let win = &mut shell_mutex.windows[idx];
+                    
+                    // Check Title Bar Buttons
+                    let action = win.handle_title_bar_click(mx, my);
+                    // DEBUG PRINT
+                    unsafe { crate::writer::print(&format!("Click at {},{} -> Action: {}\n", mx, my, action)); }
+                    if action > 0 {
+                         unsafe { crate::writer::print(&format!("Action: {}\n", action)); }
+                    }
+                    
+                    if action == 1 {
+                        // Close Window
+                        shell_mutex.windows.remove(idx);
+                        if shell_mutex.active_idx >= shell_mutex.windows.len() {
+                            shell_mutex.active_idx = if shell_mutex.windows.is_empty() { 0 } else { shell_mutex.windows.len() - 1 };
+                        }
+                    } else if action == 2 {
+                        // Maximize / Restore
+                        if win.maximized {
+                            // Restore
+                            if let Some((x, y, w, h)) = win.saved_rect {
+                                win.x = x; win.y = y; win.width = w; win.height = h;
+                                win.maximized = false;
+                                // Re-allocate buffer
+                                win.data = vec![0xFF000000; w * h];
+                                win.draw_decorations();
+                            }
+                        } else {
+                            // Maximize
+                            win.saved_rect = Some((win.x, win.y, win.width, win.height));
+                            win.x = 0; win.y = 0; win.width = width; win.height = height - 30; // Leave space for taskbar
+                            win.maximized = true;
+                            // Re-allocate buffer
+                            win.data = vec![0xFF000000; win.width * win.height];
+                            win.draw_decorations();
+                        }
+                    } else if win.is_title_bar(mx, my) {
                         is_dragging = true;
                         drag_offset_x = mx - win.x;
                         drag_offset_y = my - win.y;

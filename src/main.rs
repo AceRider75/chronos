@@ -28,6 +28,7 @@ mod mouse;
 mod compositor;
 mod time;
 mod logger;
+mod serial; // NEW
 mod ata;
 mod fat;
 
@@ -148,11 +149,42 @@ pub extern "C" fn _start() -> ! {
                 }
                 if let Some(idx) = clicked_idx {
                     shell_mutex.active_idx = idx;
-                    let win = &shell_mutex.windows[idx];
-                    if win.is_title_bar(mx, my) {
-                        is_dragging = true;
-                        drag_offset_x = mx - win.x;
-                        drag_offset_y = my - win.y;
+                    let win = &mut shell_mutex.windows[idx];
+                    
+                    // 1. Check Buttons First
+                    let action = win.handle_title_bar_click(mx, my);
+                    crate::serial_println!("Main: Click at {},{} -> Action: {}", mx, my, action);
+
+                    if action == 1 {
+                         // Close
+                         shell_mutex.windows.remove(idx);
+                         if shell_mutex.active_idx >= shell_mutex.windows.len() {
+                             shell_mutex.active_idx = if shell_mutex.windows.is_empty() { 0 } else { shell_mutex.windows.len() - 1 };
+                         }
+                    } else if action == 2 {
+                         // Maximize
+                         if win.maximized {
+                             if let Some((x, y, w, h)) = win.saved_rect {
+                                 win.x = x; win.y = y; win.width = w; win.height = h;
+                                 win.maximized = false;
+                                 win.saved_rect = None;
+                                 win.realloc_buffer();
+                                 win.draw_decorations();
+                             }
+                         } else {
+                             win.saved_rect = Some((win.x, win.y, win.width, win.height));
+                             win.x = 0; win.y = 0; win.width = width; win.height = height - 30; // -30 for taskbar
+                             win.maximized = true;
+                             win.realloc_buffer();
+                             win.draw_decorations();
+                         }
+                    } else {
+                        // 2. If NO button clicked, check for Dragging
+                        if win.is_title_bar(mx, my) {
+                            is_dragging = true;
+                            drag_offset_x = mx - win.x;
+                            drag_offset_y = my - win.y;
+                        }
                     }
                 }
             } else if !btn {

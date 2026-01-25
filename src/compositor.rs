@@ -20,6 +20,9 @@ pub struct Window {
     pub cursor_y: usize,
     // Store title for rendering
     pub title: alloc::string::String,
+    // New Fields for Window Management
+    pub maximized: bool,
+    pub saved_rect: Option<(usize, usize, usize, usize)>, // x, y, w, h
 }
 
 impl Window {
@@ -31,6 +34,8 @@ impl Window {
             cursor_x: BORDER_WIDTH + 4, 
             cursor_y: TITLE_HEIGHT + 4,
             title: alloc::string::String::from(title),
+            maximized: false,
+            saved_rect: None,
         };
         
         win.draw_decorations();
@@ -49,7 +54,22 @@ impl Window {
             }
         }
 
-        // 3. Draw Content Area (Black Box)
+        // 3. Draw Buttons (Right aligned)
+        // [X] Close   : Right-most
+        // [ ] Maximize: Left of Close
+        let btn_w = 16;
+        let btn_h = 14;
+        let btn_y = BORDER_WIDTH + 2;
+        
+        // Close Button [X]
+        let close_x = self.width - BORDER_WIDTH - btn_w - 2;
+        self.draw_rect(close_x, btn_y, btn_w, btn_h, 0xFFFF0000); // Red
+        
+        // Maximize Button [ ]
+        let max_x = close_x - btn_w - 4;
+        self.draw_rect(max_x, btn_y, btn_w, btn_h, 0xFFCCCCCC); // Grey
+
+        // 4. Draw Content Area (Black Box)
         // Starts below Title Bar
         let content_top = TITLE_HEIGHT;
         let content_bottom = self.height - BORDER_WIDTH;
@@ -62,9 +82,6 @@ impl Window {
                 self.data[idx] = CONTENT_COLOR;
             }
         }
-        
-        // 4. (Optional) Draw Title Text could go here if we extracted a string-draw helper
-        // For now, we rely on the shell to print text, but decorations make it look like a window.
     }
 
     // Only clear the Black Area, don't wipe the borders!
@@ -81,9 +98,15 @@ impl Window {
             }
         }
         // Reset Cursor to top-left of CONTENT area
-        self.cursor_x = BORDER_WIDTH + 4;
-        self.cursor_y = TITLE_HEIGHT + 4;
+        self.cursor_x = BORDER_WIDTH + 2;
+        self.cursor_y = TITLE_HEIGHT + 2;
     }
+
+    pub fn realloc_buffer(&mut self) {
+        let size = self.width * self.height;
+        self.data = alloc::vec![0; size];
+    }
+
 
     pub fn draw_char(&mut self, c: char) {
         match c {
@@ -162,6 +185,28 @@ impl Window {
         // Relative Y
         let rel_y = py - self.y;
         rel_y < TITLE_HEIGHT
+    }
+
+    // Returns: 0 = None, 1 = Close, 2 = Maximize
+    pub fn handle_title_bar_click(&self, px: usize, py: usize) -> u8 {
+        if !self.is_title_bar(px, py) { return 0; }
+        
+        let rel_x = px - self.x;
+        let btn_w = 16;
+        
+        let close_x_start = self.width - BORDER_WIDTH - btn_w - 2;
+        let close_x_end = close_x_start + btn_w;
+        
+        let max_x_start = close_x_start - btn_w - 4;
+        let max_x_end = max_x_start + btn_w;
+
+        if rel_x >= close_x_start && rel_x <= close_x_end {
+            return 1; // Close
+        }
+        if rel_x >= max_x_start && rel_x <= max_x_end {
+            return 2; // Maximize
+        }
+        0
     }
 }
 
