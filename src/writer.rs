@@ -144,10 +144,16 @@ impl Writer {
 }
 
 // Helper to print from anywhere
+// Helper to print from anywhere
 pub fn print(s: &str) {
-    // Instead of drawing pixels, we push to the log queue!
+    // 1. Log it
     logger::log(s);
     
-    // FALLBACK: If we are in a Panic, we might want to draw directly too
-    // But for normal operation, we do NOTHING graphical here.
+    // 2. Force draw it (for debugging/panics)
+    // We use try_lock to avoid deadlocks in interrupts
+    if let Some(mut w) = WRITER.try_lock() {
+        if let Some(writer) = w.as_mut() {
+             writer.direct_print(s);
+        }
+    }
 }

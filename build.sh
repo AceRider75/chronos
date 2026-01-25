@@ -23,6 +23,6 @@ xorriso -as mkisofs -b limine-bios-cd.bin \
         iso_root -o chronos.iso
 
 # 5. Deploy Limine
-../limine/limine deploy chronos.iso
+../limine/limine bios-install chronos.iso
 
 echo "Build complete."

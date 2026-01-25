@@ -2,9 +2,9 @@ use crate::{input, writer, fs, userspace, gdt, memory, state, pci, rtl8139, elf,
 use alloc::string::String;
 use alloc::vec::Vec;
 use alloc::format;
-use spin::Mutex;
-use lazy_static::lazy_static;
-use core::sync::atomic::Ordering;
+use core::sync::atomic::{AtomicU64, Ordering};
+
+pub static KERNEL_RSP: AtomicU64 = AtomicU64::new(0);
 
 pub struct Shell {
     command_buffer: String,
@@ -261,43 +261,48 @@ impl Shell {
             "rundisk" => {
                 if parts.len() < 2 { self.print("Usage: rundisk <file>\n"); } 
                 else {
-                    if let Some(file_data) = fs::read_file(parts[1]) {
-                        self.print("[LOADER] Loading from HDD into new RAM pages...\n");
-                        
-                        let user_virt_base = 0x400_000;
-                        unsafe {
-                            // 1. Allocate and map 8 fresh pages (32KB)
-                            for i in 0..8 {
-                                let v = user_virt_base + (i * 4096);
-                                let p = memory::alloc_frame().as_u64();
-                                memory::map_user_page(v, p);
+                    if let Some(fat_fs) = crate::fat::Fat32::new() {
+                        if let Some(file_data) = fat_fs.read_file(parts[1]) {
+                            self.print(&format!("File size: {}\n", file_data.len()));
+                            
+                            let user_virt_base = 0x400_000;
+                            unsafe {
+                                // 1. Allocate and map 8 fresh pages (32KB)
+                                for i in 0..8 {
+                                    let v = user_virt_base + (i * 4096);
+                                    let p = memory::alloc_frame().as_u64();
+                                    memory::map_user_page(v, p);
 
-                                // 2. Copy data from the file into the virtual address
-                                let offset = i as usize * 4096;
-                                if offset < file_data.len() {
-                                    let chunk = core::cmp::min(file_data.len() - offset, 4096);
-                                    core::ptr::copy_nonoverlapping(
-                                        file_data.as_ptr().add(offset),
-                                        v as *mut u8,
-                                        chunk
-                                    );
+                                    // 2. Copy data from the file into the virtual address
+                                    let offset = i as usize * 4096;
+                                    if offset < file_data.len() {
+                                        let chunk = core::cmp::min(file_data.len() - offset, 4096);
+                                        core::ptr::copy_nonoverlapping(
+                                            file_data.as_ptr().add(offset),
+                                            v as *mut u8,
+                                            chunk
+                                        );
+                                    }
                                 }
+
+                                // 3. Setup Stack (Mapped at 0x800000)
+                                let stack_virt = 0x800_000;
+                                memory::map_user_page(stack_virt, memory::alloc_frame().as_u64());
+                                
+                                // 4. Get entry point
+                                let raw_entry = *(file_data.as_ptr().add(24) as *const u64);
+                                self.print(&format!("Raw entry: {:x}\n", raw_entry));
+                                let target = if raw_entry >= user_virt_base { raw_entry } else { user_virt_base + raw_entry };
+
+                                self.print(&format!("[LOADER] Jumping to Ring 3 at {:x}\n", target));
+                                
+                                KERNEL_RSP.store(unsafe { let r: u64; core::arch::asm!("mov {}, rsp", out(reg) r); r & !0xF }, Ordering::Relaxed);
+                                
+                                let (code, data) = gdt::get_user_selectors();
+                                userspace::jump_to_code_raw(target, code, data, stack_virt + 4096);
                             }
-
-                            // 3. Setup Stack (Mapped at 0x800000)
-                            let stack_virt = 0x800_000;
-                            memory::map_user_page(stack_virt, memory::alloc_frame().as_u64());
-                            
-                            // 4. Get entry point
-                            let raw_entry = *(file_data.as_ptr().add(24) as *const u64);
-                            let target = if raw_entry >= user_virt_base { raw_entry } else { user_virt_base + raw_entry };
-
-                            self.print(&format!("[LOADER] Jumping to Ring 3 at {:x}\n", target));
-                            
-                            let (code, data) = gdt::get_user_selectors();
-                            userspace::jump_to_code_raw(target, code, data, stack_virt + 4096);
-                        }
-                    } else { self.print("File not found on HDD.\n"); }
+                        } else { self.print("File not found on HDD.\n"); }
+                    } else { self.print("[ERROR] Could not mount FAT32.\n"); }
                 }
             },                                    
             "ip" => {
@@ -324,10 +329,112 @@ impl Shell {
     }
 }
 
-lazy_static! {
-    pub static ref SHELL: Mutex<Shell> = Mutex::new(Shell::new());
+static mut SHELL: Option<Shell> = None;
+
+pub fn resume_shell() -> ! {
+    // Replicate main loop behavior for full GUI functionality
+    let video_ptr = state::VIDEO_PTR.load(Ordering::Relaxed) as *mut u32;
+    let width = state::SCREEN_WIDTH.load(Ordering::Relaxed);
+    let height = state::SCREEN_HEIGHT.load(Ordering::Relaxed);
+    let pitch = width; // Approximate pitch
+
+    let mut desktop = compositor::Compositor::new(width, height);
+    
+    // CRITICAL FIX: The Scheduler is still locked from the previous context!
+    // We must force unlock it to avoid deadlock.
+    unsafe {
+        scheduler::SCHEDULER.force_unlock();
+    }
+
+    // Print success message to the active shell window
+    if let Some(shell) = get_shell_mut() {
+        shell.print("\nAPP EXECUTION SUCCESSFUL!\n");
+        shell.print("Syscall 0x80 Received.\n> ");
+    }
+
+    let mut is_dragging = false;
+    let mut drag_offset_x = 0usize;
+    let mut drag_offset_y = 0usize;
+
+    loop {
+        // 1. Run scheduler frame (includes shell.run())
+        scheduler::SCHEDULER.lock().execute_frame();
+
+
+        // 2. GUI Logic - Mouse handling
+        let (mx, my, btn) = crate::mouse::get_state();
+
+        if let Some(shell_mutex) = get_shell_mut() {
+            // A. Focus / Z-Order
+            if btn && !is_dragging {
+                let mut clicked_idx = None;
+                for (i, win) in shell_mutex.windows.iter().enumerate().rev() {
+                    if win.contains(mx, my) {
+                        clicked_idx = Some(i);
+                        break;
+                    }
+                }
+                if let Some(idx) = clicked_idx {
+                    shell_mutex.active_idx = idx;
+                    let win = &shell_mutex.windows[idx];
+                    if win.is_title_bar(mx, my) {
+                        is_dragging = true;
+                        drag_offset_x = mx - win.x;
+                        drag_offset_y = my - win.y;
+                    }
+                }
+            } else if !btn {
+                is_dragging = false;
+            }
+
+            // B. Dragging
+            if is_dragging {
+                let idx = shell_mutex.active_idx;
+                if let Some(win) = shell_mutex.windows.get_mut(idx) {
+                    if mx > drag_offset_x { win.x = mx - drag_offset_x; }
+                    if my > drag_offset_y { win.y = my - drag_offset_y; }
+                }
+            }
+
+            // C. Update Task Manager windows
+            for win in shell_mutex.windows.iter_mut() {
+                if win.title == "System Monitor" {
+                    Shell::update_monitor(win);
+                }
+            }
+
+            // D. Render all windows
+            let mut draw_list: Vec<&compositor::Window> = Vec::new();
+
+            // Taskbar
+            let mut taskbar = compositor::Window::new(0, height - 30, width, 30, "Taskbar");
+            let time = crate::time::read_rtc();
+            let time_str = format!("{:02}:{:02}:{:02}", time.hours, time.minutes, time.seconds);
+            taskbar.cursor_x = width - 100;
+            taskbar.cursor_y = 5;
+            taskbar.print(&time_str);
+            draw_list.push(&taskbar);
+
+            for win in &shell_mutex.windows {
+                draw_list.push(win);
+            }
+
+            desktop.render(&draw_list);
+        }
+    }
 }
 
 pub fn shell_task() {
-    SHELL.lock().run();
+    unsafe {
+        if SHELL.is_none() {
+            SHELL = Some(Shell::new());
+        }
+        if let Some(ref mut shell) = SHELL {
+            shell.run();
+        }
+    }
+}
+
+pub fn get_shell_mut() -> Option<&'static mut Shell> {
+    unsafe { SHELL.as_mut() }
 }

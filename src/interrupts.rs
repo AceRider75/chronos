@@ -101,56 +101,24 @@ extern "x86-interrupt" fn syscall_handler(stack_frame: InterruptStackFrame) {
     let width = state::SCREEN_WIDTH.load(Ordering::Relaxed);
     let height = state::SCREEN_HEIGHT.load(Ordering::Relaxed);
 
-    if video_addr != 0 {
-        let video_ptr = video_addr as *mut u32;
+    // 3. (Removed Blue Box Drawing)
+    // The shell will handle the success message upon resume.
 
-        // 2. Draw a Blue Box in the Center (400x200)
-        let box_w = 400;
-        let box_h = 200;
-        let start_x = (width - box_w) / 2;
-        let start_y = (height - box_h) / 2;
+    // Return to shell by manually switching stack and jumping
+    // We cannot rely on IRETQ to switch stacks when returning to Ring 0.
+    
+    let rsp = crate::shell::KERNEL_RSP.load(Ordering::Relaxed);
+    let entry = crate::shell::resume_shell as *const () as u64;
 
-        for y in 0..box_h {
-            for x in 0..box_w {
-                let offset = (start_y + y) * width + (start_x + x);
-                unsafe { 
-                    // Draw Blue Background with White Border
-                    if x < 5 || x > box_w-5 || y < 5 || y > box_h-5 {
-                        *video_ptr.add(offset) = 0xFFFFFF; // White Border
-                    } else {
-                        *video_ptr.add(offset) = 0x0000AA; // Dark Blue
-                    }
-                }
-            }
-        }
-    }
-
-    // 3. Print Text (Using Writer to handle font rendering)
-    // We force the cursor to the center of our new box
-    if let Some(mut w) = writer::WRITER.try_lock() {
-        if let Some(screen) = w.as_mut() {
-            let start_x = (width - 400) / 2;
-            let start_y = (height - 200) / 2;
-            
-            screen.cursor_x = start_x + 20;
-            screen.cursor_y = start_y + 80;
-            screen.direct_print("APP EXECUTION SUCCESSFUL!");
-            
-            screen.cursor_x = start_x + 50;
-            screen.cursor_y = start_y + 110;
-            screen.direct_print("Syscall 0x80 Received.");
-        }
-    }
-
-    // Return to shell by modifying the interrupt stack
-    let (code_selector, data_selector) = gdt::get_kernel_selectors();
-    let frame_ptr = &stack_frame as *const _ as *mut u64;
     unsafe {
-        *frame_ptr.add(0) = crate::shell::resume_shell as u64; // instruction_pointer
-        *frame_ptr.add(1) = code_selector as u64; // code_segment
-        *frame_ptr.add(2) = 0x202; // cpu_flags
-        *frame_ptr.add(3) = crate::shell::KERNEL_RSP.load(Ordering::Relaxed); // stack_pointer
-        *frame_ptr.add(4) = data_selector as u64; // stack_segment
+        core::arch::asm!(
+            "mov rsp, {0}",   // 1. Restore Kernel Stack
+            "sti",            // 2. Enable Interrupts
+            "jmp {1}",        // 3. Jump to Shell
+            in(reg) rsp,
+            in(reg) entry,
+            options(noreturn)
+        );
     }
 }
 

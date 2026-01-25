@@ -3,6 +3,7 @@ use crate::writer;
 use alloc::vec::Vec;
 use alloc::string::String;
 use alloc::format;
+use core::convert::TryInto;
 
 // --- STRUCTS ---
 #[repr(C, packed)]
@@ -60,6 +61,7 @@ pub struct Fat32 {
     data_start: u32,
     sectors_per_cluster: u32,
     root_cluster: u32,
+    fat_start: u32,
 }
 
 impl Fat32 {
@@ -85,6 +87,7 @@ impl Fat32 {
 
         let fat_area_size = num_fats * fat32_size;
         let data_start = rsvd_sec + fat_area_size;
+        let fat_start = rsvd_sec;
 
         writer::print(&format!("[FAT] Mounted. Root Cluster: {}\n", root_cluster));
 
@@ -94,6 +97,7 @@ impl Fat32 {
             data_start,
             sectors_per_cluster: spc,
             root_cluster,
+            fat_start,
         })
     }
 
@@ -136,6 +140,21 @@ impl Fat32 {
         }
     }
 
+    fn get_clusters(&self, start_cluster: u32) -> Vec<u32> {
+        let mut clusters = Vec::new();
+        let mut current = start_cluster;
+        while current < 0x0FFFFFF8 && current != 0 {
+            clusters.push(current);
+            let fat_offset = current * 4;
+            let fat_sector = self.fat_start + (fat_offset / 512);
+            let sector_offset = (fat_offset % 512) as usize;
+            let data = self.drive.read_sectors(fat_sector, 1);
+            let next = u32::from_le_bytes(data[sector_offset..sector_offset + 4].try_into().unwrap()) & 0x0FFFFFFF;
+            current = next;
+        }
+        clusters
+    }
+
     pub fn read_file(&self, filename: &str) -> Option<Vec<u8>> {
         let root_lba = self.cluster_to_lba(self.root_cluster);
         let data = self.drive.read_sectors(root_lba, self.sectors_per_cluster as u8);
@@ -156,18 +175,20 @@ impl Fat32 {
                 let cluster = ((entry.cluster_high as u32) << 16) | (entry.cluster_low as u32);
                 let size = entry.size as usize;
                 
-                // Read the cluster data
-                // NOTE: This only reads the FIRST cluster (usually 4KB). 
-                // Larger files need FAT table lookup (Linked List).
-                let file_lba = self.cluster_to_lba(cluster);
-                let raw_data = self.drive.read_sectors(file_lba, self.sectors_per_cluster as u8);
+                // Read all clusters
+                let clusters = self.get_clusters(cluster);
+                let mut raw_data = Vec::new();
+                for c in clusters {
+                    let file_lba = self.cluster_to_lba(c);
+                    let data = self.drive.read_sectors(file_lba, self.sectors_per_cluster as u8);
+                    raw_data.extend_from_slice(&data);
+                }
                 
                 // Trim to actual size
                 if size < raw_data.len() {
-                    return Some(raw_data[0..size].to_vec());
-                } else {
-                    return Some(raw_data);
+                    raw_data.truncate(size);
                 }
+                return Some(raw_data);
             }
         }
         None

@@ -136,7 +136,7 @@ pub extern "C" fn _start() -> ! {
         // --- GUI LOGIC ---
         let (mx, my, btn) = mouse::get_state();
 
-        if let Some(mut shell_mutex) = shell::SHELL.try_lock() {
+        if let Some(shell_mutex) = shell::get_shell_mut() {
             // A. Focus / Z-Order
             if btn && !is_dragging {
                 let mut clicked_idx = None;
