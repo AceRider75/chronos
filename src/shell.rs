@@ -174,6 +174,7 @@ impl Shell {
                 } else {
                     if fs::mkdir(&self.current_dir, parts[1]) {
                         self.print(&format!("Directory '{}' created.\n", parts[1]));
+                        fs::save_to_disk();
                     } else {
                         self.print("Error: Could not create directory.\n");
                     }
@@ -185,6 +186,7 @@ impl Shell {
                 } else {
                     if fs::rm(&self.current_dir, parts[1]) {
                         self.print(&format!("Removed '{}'.\n", parts[1]));
+                        fs::save_to_disk();
                     } else {
                         self.print("Error: Could not remove item.\n");
                     }
@@ -213,6 +215,7 @@ impl Shell {
                     let text = parts[2..].join(" ");
                     if fs::touch(&self.current_dir, parts[1], text.into_bytes()) {
                         self.print(&format!("File '{}' written.\n", parts[1]));
+                        fs::save_to_disk();
                     } else {
                         self.print("Error: Could not write file.\n");
                     }
@@ -245,6 +248,7 @@ impl Shell {
                 } else {
                     if fs::touch(&self.current_dir, parts[1], Vec::new()) {
                         self.print(&format!("File '{}' created.\n", parts[1]));
+                        fs::save_to_disk();
                     } else {
                         self.print("Error: Could not create file.\n");
                     }

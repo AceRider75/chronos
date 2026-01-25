@@ -1,3 +1,4 @@
+use crate::writer;
 use limine::request::ModuleRequest;
 use alloc::vec::Vec;
 use alloc::string::{String, ToString};
@@ -31,29 +32,6 @@ lazy_static! {
         name: "/".to_string(),
         children: Vec::new(),
     });
-}
-
-pub fn init() {
-    let mut root = ROOT.lock();
-    
-    if let Some(response) = MODULE_REQUEST.get_response() {
-        for module in response.modules() {
-            let start = module.addr() as *const u8;
-            let size = module.size() as usize;
-            let raw_data = unsafe { core::slice::from_raw_parts(start, size) };
-            let data = raw_data.to_vec();
-
-            let path_str = module.path().to_str().unwrap_or("unknown");
-            let clean_name = path_str.rfind('/').map(|idx| &path_str[idx+1..]).unwrap_or(path_str);
-
-            if let Node::Directory { children, .. } = &mut *root {
-                children.push(Node::File {
-                    name: clean_name.to_string(),
-                    data,
-                });
-            }
-        }
-    }
 }
 
 // Helper to find a directory by path (simple absolute path for now)
@@ -155,6 +133,156 @@ pub fn read(path: &str, name: &str) -> Option<Vec<u8>> {
         }
     }
     None
+}
+
+pub fn init() {
+    // 1. Try to load from disk first
+    if load_from_disk() {
+        writer::print("[FS] Persistent VFS loaded from disk.\n");
+        return;
+    }
+
+    // 2. Fallback to Limine modules
+    writer::print("[FS] No persistent VFS found. Initializing from boot modules.\n");
+    let mut root = ROOT.lock();
+    
+    if let Some(response) = MODULE_REQUEST.get_response() {
+        for module in response.modules() {
+            let start = module.addr() as *const u8;
+            let size = module.size() as usize;
+            let raw_data = unsafe { core::slice::from_raw_parts(start, size) };
+            let data = raw_data.to_vec();
+
+            let path_str = module.path().to_str().unwrap_or("unknown");
+            let clean_name = path_str.rfind('/').map(|idx| &path_str[idx+1..]).unwrap_or(path_str);
+
+            if let Node::Directory { children, .. } = &mut *root {
+                children.push(Node::File {
+                    name: clean_name.to_string(),
+                    data,
+                });
+            }
+        }
+    }
+}
+
+const DISK_LBA_START: u32 = 10000;
+const MAGIC: &[u8] = b"CHRONOSFS";
+
+pub fn save_to_disk() {
+    let root = ROOT.lock();
+    let mut data = Vec::new();
+    
+    // Header
+    data.extend_from_slice(MAGIC);
+    data.extend_from_slice(&0u32.to_le_bytes()); // Placeholder for size
+    data.push(1); // Version
+
+    // Serialize tree
+    serialize_node(&root, &mut data);
+
+    // Update size
+    let size = data.len() as u32;
+    data[9..13].copy_from_slice(&size.to_le_bytes());
+
+    // Pad to 512 bytes
+    let padding = (512 - (data.len() % 512)) % 512;
+    for _ in 0..padding { data.push(0); }
+
+    let drive = crate::ata::AtaDrive::new(true);
+    if drive.identify() {
+        drive.write_sectors(DISK_LBA_START, &data);
+    }
+}
+
+pub fn load_from_disk() -> bool {
+    let drive = crate::ata::AtaDrive::new(true);
+    if !drive.identify() { return false; }
+
+    // Read header (first sector)
+    let header = drive.read_sectors(DISK_LBA_START, 1);
+    if header.len() < 14 || &header[0..9] != MAGIC {
+        return false;
+    }
+
+    let total_size = u32::from_le_bytes(header[9..13].try_into().unwrap()) as usize;
+    if total_size == 0 || total_size > 10 * 1024 * 1024 { // 10MB limit for safety
+        return false;
+    }
+
+    // Read full data
+    let sectors = ((total_size + 511) / 512) as u8;
+    let full_data = drive.read_sectors(DISK_LBA_START, sectors);
+    
+    let mut offset = 14; // After Magic, Size, Version
+    if let Some(new_root) = deserialize_node(&full_data, &mut offset) {
+        let mut root = ROOT.lock();
+        *root = new_root;
+        return true;
+    }
+    
+    false
+}
+
+fn serialize_node(node: &Node, data: &mut Vec<u8>) {
+    match node {
+        Node::File { name, data: file_data } => {
+            data.push(0); // Type: File
+            serialize_string(name, data);
+            data.extend_from_slice(&(file_data.len() as u32).to_le_bytes());
+            data.extend_from_slice(file_data);
+        }
+        Node::Directory { name, children } => {
+            data.push(1); // Type: Directory
+            serialize_string(name, data);
+            data.extend_from_slice(&(children.len() as u32).to_le_bytes());
+            for child in children {
+                serialize_node(child, data);
+            }
+        }
+    }
+}
+
+fn deserialize_node(data: &[u8], offset: &mut usize) -> Option<Node> {
+    if *offset >= data.len() { return None; }
+    let node_type = data[*offset];
+    *offset += 1;
+
+    let name = deserialize_string(data, offset)?;
+
+    if node_type == 0 { // File
+        if *offset + 4 > data.len() { return None; }
+        let size = u32::from_le_bytes(data[*offset..*offset+4].try_into().unwrap()) as usize;
+        *offset += 4;
+        if *offset + size > data.len() { return None; }
+        let file_data = data[*offset..*offset+size].to_vec();
+        *offset += size;
+        Some(Node::File { name, data: file_data })
+    } else { // Directory
+        if *offset + 4 > data.len() { return None; }
+        let count = u32::from_le_bytes(data[*offset..*offset+4].try_into().unwrap()) as u32;
+        *offset += 4;
+        let mut children = Vec::new();
+        for _ in 0..count {
+            children.push(deserialize_node(data, offset)?);
+        }
+        Some(Node::Directory { name, children })
+    }
+}
+
+fn serialize_string(s: &str, data: &mut Vec<u8>) {
+    data.extend_from_slice(&(s.len() as u32).to_le_bytes());
+    data.extend_from_slice(s.as_bytes());
+}
+
+fn deserialize_string(data: &[u8], offset: &mut usize) -> Option<String> {
+    if *offset + 4 > data.len() { return None; }
+    let len = u32::from_le_bytes(data[*offset..*offset+4].try_into().unwrap()) as usize;
+    *offset += 4;
+    if *offset + len > data.len() { return None; }
+    let s = String::from_utf8(data[*offset..*offset+len].to_vec()).ok()?;
+    *offset += len;
+    Some(s)
 }
 
 // Compatibility for existing code
