@@ -67,3 +67,7 @@ pub fn get_user_selectors() -> (u16, u16) {
     // RPL 3 is required for Ring 3
     (GDT.1.user_code_selector.0 | 3, GDT.1.user_data_selector.0 | 3)
 }
+
+pub fn get_kernel_selectors() -> (u16, u16) {
+    (GDT.1.code_selector.0, GDT.1.data_selector.0)
+}

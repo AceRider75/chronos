@@ -5,8 +5,9 @@ use pic8259::ChainedPics;
 use spin::Mutex;
 use x86_64::instructions::port::Port;
 use pc_keyboard::{layouts, DecodedKey, HandleControl, Keyboard, ScancodeSet1};
-use crate::{state, input, writer};
-use core::sync::atomic::Ordering; // <--- ADD THIS
+use x86_64::VirtAddr;
+use crate::{state, input, writer, gdt};
+use core::sync::atomic::Ordering;
 
 // --- CONFIGURATION ---
 pub const PIC_1_OFFSET: u8 = 32;
@@ -92,7 +93,7 @@ extern "x86-interrupt" fn page_fault_handler(
 }
 
 // THE SYSCALL HANDLER
-extern "x86-interrupt" fn syscall_handler(_stack_frame: InterruptStackFrame) {
+extern "x86-interrupt" fn syscall_handler(stack_frame: InterruptStackFrame) {
     x86_64::instructions::interrupts::enable();
 
     // 1. Get Video Info
@@ -139,6 +140,17 @@ extern "x86-interrupt" fn syscall_handler(_stack_frame: InterruptStackFrame) {
             screen.cursor_y = start_y + 110;
             screen.direct_print("Syscall 0x80 Received.");
         }
+    }
+
+    // Return to shell by modifying the interrupt stack
+    let (code_selector, data_selector) = gdt::get_kernel_selectors();
+    let frame_ptr = &stack_frame as *const _ as *mut u64;
+    unsafe {
+        *frame_ptr.add(0) = crate::shell::resume_shell as u64; // instruction_pointer
+        *frame_ptr.add(1) = code_selector as u64; // code_segment
+        *frame_ptr.add(2) = 0x202; // cpu_flags
+        *frame_ptr.add(3) = crate::shell::KERNEL_RSP.load(Ordering::Relaxed); // stack_pointer
+        *frame_ptr.add(4) = data_selector as u64; // stack_segment
     }
 }
 
