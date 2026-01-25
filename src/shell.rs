@@ -11,7 +11,10 @@ pub struct Shell {
     command_buffer: String,
     pub windows: Vec<compositor::Window>,
     pub active_idx: usize,
+    last_spawn_time: u64,
 }
+
+const MAX_WINDOWS: usize = 15;
 
 impl Shell {
     pub fn new() -> Self {
@@ -25,6 +28,7 @@ impl Shell {
             command_buffer: String::new(),
             windows,
             active_idx: 0,
+            last_spawn_time: 0,
         }
     }
 
@@ -61,7 +65,11 @@ impl Shell {
                 // For this step, let's use '~' as the "Terminal Shortcut" for simplicity 
                 // as modifying the keyboard driver is risky.
                 '~' => {
-                     self.spawn_terminal();
+                     let now = unsafe { core::arch::x86_64::_rdtsc() };
+                     if now - self.last_spawn_time > 1_000_000_000 { // Approx 0.5s - 1s depending on CPU
+                         self.spawn_terminal();
+                         self.last_spawn_time = now;
+                     }
                 },
                 _ => {
                     self.command_buffer.push(c);
@@ -80,6 +88,10 @@ impl Shell {
     }
 
     fn spawn_terminal(&mut self) {
+        if self.windows.len() >= MAX_WINDOWS {
+            self.print("\nError: Maximum window limit reached (Resource Protection).\n");
+            return;
+        }
         let count = self.windows.len() + 1;
         let title = format!("Terminal {}", count);
         let mut win = compositor::Window::new(50 + (count*30), 50 + (count*30), 700, 400, &title);
@@ -118,6 +130,10 @@ impl Shell {
             },
             "term" => self.spawn_terminal(),
             "browser" => {
+                if self.windows.len() >= MAX_WINDOWS {
+                    self.print("Error: Maximum window limit reached.\n");
+                    return;
+                }
                 let mut win = compositor::Window::new(100, 100, 800, 600, "Chronos Browser");
                 win.print("Welcome to Chronos Browser v0.1\n");
                 win.print("-------------------------------\n");
@@ -129,6 +145,10 @@ impl Shell {
                 self.active_idx = self.windows.len() - 1;
             },
             "install" => {
+                if self.windows.len() >= MAX_WINDOWS {
+                    self.print("Error: Maximum window limit reached.\n");
+                    return;
+                }
                 let mut win = compositor::Window::new(200, 200, 500, 300, "Chronos Installer");
                 win.print("Chronos OS Installer\n");
                 win.print("--------------------\n\n");
@@ -141,6 +161,10 @@ impl Shell {
                 self.active_idx = self.windows.len() - 1;
             },
             "top" => {
+                if self.windows.len() >= MAX_WINDOWS {
+                    self.print("Error: Maximum window limit reached.\n");
+                    return;
+                }
                 let mut win = compositor::Window::new(300, 100, 400, 500, "System Monitor");
                 self.windows.push(win);
                 self.active_idx = self.windows.len() - 1;
@@ -347,6 +371,21 @@ impl Shell {
         win.clear(); 
         
         win.print("TASK MANAGER\n");
+        
+        let (used, total) = crate::allocator::get_heap_usage();
+        let used_mb = used / (1024 * 1024);
+        let total_mb = total / (1024 * 1024);
+        let mem_percent = (used * 100) / total;
+        
+        win.print(&format!("Memory: {}/{} MB ({}%)\n", used_mb, total_mb, mem_percent));
+        let mut mem_bar = String::from("[");
+        let bar_filled = (mem_percent / 5) as usize; // 20 segments
+        for _ in 0..bar_filled { mem_bar.push('='); }
+        for _ in 0..(20 - bar_filled) { mem_bar.push(' '); }
+        mem_bar.push(']');
+        win.print(&mem_bar);
+        win.print("\n\n");
+
         win.print("----------------------------------\n");
         win.print("ID  NAME        COST      STATUS\n");
         
@@ -415,12 +454,8 @@ pub fn resume_shell() -> ! {
         // 2. GUI Logic - Mouse handling
         let (mx, my, btn) = crate::mouse::get_state();
         
-        // DEBUG: Print mouse state every 100th frame or something? 
-        // No, let's print every frame for a second to see if it scrolls.
-        crate::serial_println!("Tick: {}, {}, {}", mx, my, btn);
-        
         if btn {
-             crate::serial_println!("Shell: Button TRUE");
+             // Click handling logic follows...
         }
 
         if let Some(shell_mutex) = get_shell_mut() {

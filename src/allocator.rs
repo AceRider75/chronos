@@ -26,6 +26,11 @@ pub fn init_heap() {
     }
 }
 
+pub fn get_heap_usage() -> (usize, usize) {
+    let heap = ALLOCATOR.lock();
+    (heap.used(), heap.size())
+}
+
 // 4. ERROR HANDLING
 // If we run out of memory, this function is called.
 #[alloc_error_handler]

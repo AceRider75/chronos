@@ -153,7 +153,6 @@ pub extern "C" fn _start() -> ! {
                     
                     // 1. Check Buttons First
                     let action = win.handle_title_bar_click(mx, my);
-                    crate::serial_println!("Main: Click at {},{} -> Action: {}", mx, my, action);
 
                     if action == 1 {
                          // Close
