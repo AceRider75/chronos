@@ -148,8 +148,13 @@ pub extern "C" fn _start() -> ! {
                     }
                 }
                 if let Some(idx) = clicked_idx {
-                    shell_mutex.active_idx = idx;
-                    let win = &mut shell_mutex.windows[idx];
+                    // Z-Order: Bring to Front
+                    let win = shell_mutex.windows.remove(idx);
+                    shell_mutex.windows.push(win);
+                    let new_idx = shell_mutex.windows.len() - 1;
+                    shell_mutex.active_idx = new_idx;
+                    
+                    let win = &mut shell_mutex.windows[new_idx];
                     
                     // 1. Check Buttons First
                     let action = win.handle_title_bar_click(mx, my);

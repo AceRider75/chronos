@@ -469,16 +469,16 @@ pub fn resume_shell() -> ! {
                     }
                 }
                 if let Some(idx) = clicked_idx {
-                    shell_mutex.active_idx = idx;
-                    let win = &mut shell_mutex.windows[idx];
+                    // Z-Order: Bring to Front
+                    let win = shell_mutex.windows.remove(idx);
+                    shell_mutex.windows.push(win);
+                    let new_idx = shell_mutex.windows.len() - 1;
+                    shell_mutex.active_idx = new_idx;
+                    
+                    let win = &mut shell_mutex.windows[new_idx];
                     
                     // Check Title Bar Buttons
                     let action = win.handle_title_bar_click(mx, my);
-                    // DEBUG PRINT
-                    unsafe { crate::writer::print(&format!("Click at {},{} -> Action: {}\n", mx, my, action)); }
-                    if action > 0 {
-                         unsafe { crate::writer::print(&format!("Action: {}\n", action)); }
-                    }
                     
                     if action == 1 {
                         // Close Window
