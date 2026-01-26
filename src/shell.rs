@@ -15,6 +15,8 @@ pub struct Shell {
     pub current_dir: String,
     pub history: Vec<String>,
     pub history_idx: usize,
+    pub clipboard: String,
+    pub nano_status: String,
 }
 
 const MAX_WINDOWS: usize = 15;
@@ -35,6 +37,8 @@ impl Shell {
             current_dir: "/".to_string(),
             history: Vec::new(),
             history_idx: 0,
+            clipboard: String::new(),
+            nano_status: String::new(),
         };
         s.load_history();
         s
@@ -81,12 +85,48 @@ impl Shell {
                                 win.print(&text);
                             }
                         }
-                        '\x13' => { // Ctrl+S (Mapped to \x13)
+                        '\x13' | '\x0F' => { // Ctrl+S or Ctrl+O (Save)
                             let filename = win.title.trim_start_matches("Nano - ").to_string();
                             let content = win.text_buffer.clone();
+                            let len = content.len();
                             fs::touch(&self.current_dir, &filename, content.into_bytes());
                             fs::save_to_disk();
-                            win.print("\n[SAVED]");
+                            self.nano_status = format!("[ Saved {} bytes ]", len);
+                        }
+                        '\x18' => { // Ctrl+X (Exit)
+                            self.windows.remove(active_idx);
+                            if self.active_idx >= self.windows.len() {
+                                self.active_idx = if self.windows.is_empty() { 0 } else { self.windows.len() - 1 };
+                            }
+                            return; // Exit the run() call for this frame
+                        }
+                        '\x0B' => { // Ctrl+K (Cut)
+                            self.clipboard = win.text_buffer.clone();
+                            win.text_buffer.clear();
+                            win.clear();
+                            self.nano_status = format!("[ Cut {} characters ]", self.clipboard.len());
+                        }
+                        '\x15' => { // Ctrl+U (Uncut/Paste)
+                            let clip = self.clipboard.clone();
+                            win.print(&clip);
+                            self.nano_status = format!("[ Uncut {} characters ]", clip.len());
+                        }
+                        '\x03' => { // Ctrl+C (Cur Pos)
+                            self.nano_status = format!("[ Line {}, Col {} ]", win.cursor_y / 18, win.cursor_x / 9);
+                        }
+                        '\x07' => { // Ctrl+G (Get Help)
+                            self.nano_status = "[ Shortcuts: ^O Save, ^X Exit, ^K Cut, ^U Paste, ^R Read ]".to_string();
+                        }
+                        '\x12' => { // Ctrl+R (Read File)
+                            // For now, let's just simulate reading a file named 'import.txt'
+                            if let Some(data) = fs::read(&self.current_dir, "import.txt") {
+                                if let Ok(s) = String::from_utf8(data) {
+                                    win.print(&s);
+                                    self.nano_status = "[ Read import.txt ]".to_string();
+                                }
+                            } else {
+                                self.nano_status = "[ Error: import.txt not found ]".to_string();
+                            }
                         }
                         _ => {
                             let mut s = String::new();
@@ -827,17 +867,21 @@ impl Shell {
         win.print("Double-click to open (Simulated)\n");
     }
 
-    pub fn update_nano(win: &mut compositor::Window) {
-        // Nano is mostly static until input happens, but we can draw a status bar
-        let title = win.title.clone();
-        let filename = title.trim_start_matches("Nano - ");
+    pub fn update_nano(win: &mut compositor::Window, status: &str) {
+        let w = win.width;
+        let h = win.height;
         
-        // Draw status bar at the bottom (simulated by printing at the end)
-        // In a real TUI we'd use coordinates, but here we just ensure the buffer is clean
-        // and has the status bar.
+        // 1. Draw Status Bar (White background, black text)
+        win.draw_rect(2, h - 50, w - 4, 18, 0xFFFFFFFF);
+        win.print_fixed(5, h - 48, status, 0xFF000000); // Black text on white
         
-        // win.clear(); // Don't clear every frame or we lose the buffer!
-        // Instead, we'll handle typing in main.rs and only re-draw decorations here if needed.
+        // 2. Draw Shortcut Menu (Black background, white text)
+        win.draw_rect(2, h - 32, w - 4, 30, 0xFF000000);
+        
+        // Row 1
+        win.print_fixed(5, h - 30, "^G Help  ^O WriteOut ^W WhereIs ^K Cut    ^J Justify ^C CurPos", 0xFFFFFFFF);
+        // Row 2
+        win.print_fixed(5, h - 15, "^X Exit  ^R ReadFile ^\u{005C} Replace ^U Uncut  ^T ToSpell ^_ GoToLine", 0xFFFFFFFF);
     }
 }
 

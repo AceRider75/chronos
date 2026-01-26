@@ -100,9 +100,30 @@ impl Window {
             }
         }
         // Reset Cursor to top-left of CONTENT area
-        self.cursor_x = BORDER_WIDTH + 2;
-        self.cursor_y = TITLE_HEIGHT + 2;
+        self.cursor_x = BORDER_WIDTH + 4;
+        self.cursor_y = TITLE_HEIGHT + 4;
         self.text_buffer.clear();
+    }
+
+    // Only clear the Black Area, don't wipe the borders!
+     fn scroll(&mut self) {
+        let line_height = 18;
+        let top = TITLE_HEIGHT + 4; // Adjusted to match cursor_y initial position
+        let bottom_margin = if self.title.starts_with("Nano - ") { 55 } else { BORDER_WIDTH };
+        let bottom = self.height - bottom_margin;
+        
+        if bottom <= top + line_height { return; }
+
+        for y in top..(bottom - line_height) {
+            for x in BORDER_WIDTH..(self.width - BORDER_WIDTH) {
+                let src_idx = (y + line_height) * self.width + x;
+                let dst_idx = y * self.width + x;
+                self.data[dst_idx] = self.data[src_idx];
+            }
+        }
+        // Clear last line
+        self.draw_rect(BORDER_WIDTH, bottom - line_height, self.width - 2 * BORDER_WIDTH, line_height, 0xFF000000);
+        self.cursor_y -= line_height;
     }
 
     pub fn realloc_buffer(&mut self) {
@@ -112,39 +133,35 @@ impl Window {
 
 
     pub fn draw_char(&mut self, c: char) {
-        self.text_buffer.push(c);
+        let bottom_margin = if self.title.starts_with("Nano - ") { 55 } else { BORDER_WIDTH };
         match c {
             '\n' => {
+                self.text_buffer.push(c);
                 self.cursor_x = BORDER_WIDTH + 4;
                 self.cursor_y += 18;
             }
-            '\x08' => { // Backspace
+            '\r' => {
+                self.cursor_x = BORDER_WIDTH + 4;
+            }
+            '\x08' => { // Backspace (Visual only, buffer handled by caller usually)
                 if self.cursor_x >= (BORDER_WIDTH + 4 + 9) {
                     self.cursor_x -= 9;
-                    self.draw_rect(self.cursor_x, self.cursor_y, 9, 16, CONTENT_COLOR);
+                    self.draw_rect(self.cursor_x, self.cursor_y, 9, 16, 0xFF000000);
                 }
             }
             _ => {
+                if c >= ' ' {
+                    self.text_buffer.push(c);
+                }
                 let raster = get_raster(c, FontWeight::Regular, RasterHeight::Size16).unwrap_or(
                     get_raster('?', FontWeight::Regular, RasterHeight::Size16).unwrap()
                 );
                 
-                // Wrap
-                if self.cursor_x + raster.width() >= (self.width - BORDER_WIDTH) {
-                    self.cursor_x = BORDER_WIDTH + 4;
-                    self.cursor_y += 18;
-                }
-
-                // Scroll Check
-                if self.cursor_y + 16 >= (self.height - BORDER_WIDTH) {
-                    self.clear(); // Simple scroll = clear for now
-                }
-
-                for (y, row) in raster.raster().iter().enumerate() {
-                    for (x, byte) in row.iter().enumerate() {
+                for (row_y, row) in raster.raster().iter().enumerate() {
+                    for (col_x, byte) in row.iter().enumerate() {
                         if *byte > 0 {
-                            let px = self.cursor_x + x;
-                            let py = self.cursor_y + y;
+                            let px = self.cursor_x + col_x;
+                            let py = self.cursor_y + row_y;
                             // Bounds Check
                             if px < self.width && py < self.height {
                                 let idx = py * self.width + px;
@@ -156,6 +173,15 @@ impl Window {
                 self.cursor_x += raster.width();
             }
         }
+
+        if self.cursor_x + 9 >= self.width - BORDER_WIDTH {
+            self.cursor_x = BORDER_WIDTH + 4;
+            self.cursor_y += 18;
+        }
+
+        if self.cursor_y + 18 >= self.height - bottom_margin {
+            self.scroll();
+        }
     }
 
     pub fn print(&mut self, text: &str) {
@@ -164,7 +190,39 @@ impl Window {
         }
     }
 
-    fn draw_rect(&mut self, x: usize, y: usize, w: usize, h: usize, color: u32) {
+    pub fn set_cursor(&mut self, x: usize, y: usize) {
+        self.cursor_x = x;
+        self.cursor_y = y;
+    }
+
+    pub fn print_at(&mut self, x: usize, y: usize, text: &str) {
+        self.print_fixed(x, y, text, 0xFFFFFFFF);
+    }
+
+    pub fn print_fixed(&mut self, x: usize, y: usize, text: &str, color: u32) {
+        let mut cur_x = x;
+        for c in text.chars() {
+            let raster = get_raster(c, FontWeight::Regular, RasterHeight::Size16).unwrap_or(
+                get_raster('?', FontWeight::Regular, RasterHeight::Size16).unwrap()
+            );
+            
+            for (row_y, row) in raster.raster().iter().enumerate() {
+                for (col_x, byte) in row.iter().enumerate() {
+                    if *byte > 0 {
+                        let px = cur_x + col_x;
+                        let py = y + row_y;
+                        if px < self.width && py < self.height {
+                            let idx = py * self.width + px;
+                            self.data[idx] = color;
+                        }
+                    }
+                }
+            }
+            cur_x += raster.width();
+        }
+    }
+
+    pub fn draw_rect(&mut self, x: usize, y: usize, w: usize, h: usize, color: u32) {
         for i in 0..h {
             for j in 0..w {
                 let px = x + j;
