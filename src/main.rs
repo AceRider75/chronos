@@ -211,6 +211,8 @@ pub extern "C" fn _start() -> ! {
                     shell::Shell::update_monitor(win);
                 } else if win.title == "File Explorer" {
                     shell::Shell::update_explorer(win, &shell_mutex.current_dir);
+                } else if win.title.starts_with("Nano - ") {
+                    shell::Shell::update_nano(win);
                 }
             }
 

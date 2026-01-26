@@ -138,7 +138,16 @@ extern "x86-interrupt" fn keyboard_interrupt_handler(_stack_frame: InterruptStac
         if let Some(key) = keyboard.process_keyevent(key_event) {
             match key {
                 DecodedKey::Unicode(character) => { input::push_key(character); },
-                DecodedKey::RawKey(_) => {},
+                DecodedKey::RawKey(k) => {
+                    use pc_keyboard::KeyCode;
+                    match k {
+                        KeyCode::ArrowUp => input::push_key('\x11'),
+                        KeyCode::ArrowDown => input::push_key('\x12'),
+                        KeyCode::ArrowLeft => input::push_key('\x13'),
+                        KeyCode::ArrowRight => input::push_key('\x14'),
+                        _ => {}
+                    }
+                },
             }
         }
     }

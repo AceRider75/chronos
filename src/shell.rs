@@ -13,6 +13,8 @@ pub struct Shell {
     pub active_idx: usize,
     last_spawn_time: u64,
     pub current_dir: String,
+    pub history: Vec<String>,
+    pub history_idx: usize,
 }
 
 const MAX_WINDOWS: usize = 15;
@@ -25,13 +27,36 @@ impl Shell {
         let mut windows = Vec::new();
         windows.push(win);
 
-        Shell {
+        let mut s = Shell {
             command_buffer: String::new(),
             windows,
             active_idx: 0,
             last_spawn_time: 0,
             current_dir: "/".to_string(),
+            history: Vec::new(),
+            history_idx: 0,
+        };
+        s.load_history();
+        s
+    }
+
+    fn load_history(&mut self) {
+        if let Some(data) = fs::read("/", ".bash_history") {
+            if let Ok(s) = String::from_utf8(data) {
+                self.history = s.lines().map(|l| l.to_string()).collect();
+                self.history_idx = self.history.len();
+            }
         }
+    }
+
+    fn save_history(&self) {
+        let mut data = String::new();
+        for h in &self.history {
+            data.push_str(h);
+            data.push('\n');
+        }
+        fs::touch("/", ".bash_history", data.into_bytes());
+        fs::save_to_disk();
     }
 
     fn print(&mut self, text: &str) {
@@ -43,6 +68,36 @@ impl Shell {
     pub fn run(&mut self) {
         // 1. Input
         while let Some(c) = input::pop_key() {
+            let active_idx = self.active_idx;
+            if let Some(win) = self.windows.get_mut(active_idx) {
+                if win.title.starts_with("Nano - ") {
+                    // NANO INPUT HANDLING
+                    match c {
+                        '\x08' => { // Backspace
+                            if !win.text_buffer.is_empty() {
+                                win.text_buffer.pop();
+                                let text = win.text_buffer.clone();
+                                win.clear();
+                                win.print(&text);
+                            }
+                        }
+                        '\x13' => { // Ctrl+S (Mapped to \x13)
+                            let filename = win.title.trim_start_matches("Nano - ").to_string();
+                            let content = win.text_buffer.clone();
+                            fs::touch(&self.current_dir, &filename, content.into_bytes());
+                            fs::save_to_disk();
+                            win.print("\n[SAVED]");
+                        }
+                        _ => {
+                            let mut s = String::new();
+                            s.push(c);
+                            win.print(&s);
+                        }
+                    }
+                    continue; // Skip terminal handling
+                }
+            }
+
             match c {
                 '\n' => {
                     self.print("\n");
@@ -56,19 +111,33 @@ impl Shell {
                         self.print("\x08"); 
                     }
                 }
-                // F1 Shortcut (Mapped to 0x01 in our simple input handler for now, or check scancode)
-                // Note: Our input::pop_key returns char. F1 isn't a char.
-                // We need to check raw scancodes or use a special char mapping.
-                // For now, let's assume F1 maps to a special char or we check input::last_scancode if available.
-                // Alternatively, we can just map '~' to new terminal for simplicity if F1 is hard.
-                // Let's stick to the plan: We need to check if we can get F1.
-                // Looking at interrupts.rs, it pushes DecodedKey::Unicode.
-                // We might need to update interrupts.rs to pass special keys.
-                // For this step, let's use '~' as the "Terminal Shortcut" for simplicity 
-                // as modifying the keyboard driver is risky.
+                '\x11' => { // Up Arrow
+                    if !self.history.is_empty() && self.history_idx > 0 {
+                        self.history_idx -= 1;
+                        // Clear current line
+                        for _ in 0..self.command_buffer.len() { self.print("\x08"); }
+                        self.command_buffer = self.history[self.history_idx].clone();
+                        let cmd = self.command_buffer.clone();
+                        self.print(&cmd);
+                    }
+                }
+                '\x12' => { // Down Arrow
+                    if self.history_idx < self.history.len() {
+                        self.history_idx += 1;
+                        // Clear current line
+                        for _ in 0..self.command_buffer.len() { self.print("\x08"); }
+                        if self.history_idx < self.history.len() {
+                            self.command_buffer = self.history[self.history_idx].clone();
+                        } else {
+                            self.command_buffer.clear();
+                        }
+                        let cmd = self.command_buffer.clone();
+                        self.print(&cmd);
+                    }
+                }
                 '~' => {
                      let now = unsafe { core::arch::x86_64::_rdtsc() };
-                     if now - self.last_spawn_time > 1_000_000_000 { // Approx 0.5s - 1s depending on CPU
+                     if now - self.last_spawn_time > 1_000_000_000 { 
                          self.spawn_terminal();
                          self.last_spawn_time = now;
                      }
@@ -104,6 +173,14 @@ impl Shell {
 
     fn execute_command(&mut self) {
         let cmd = String::from(self.command_buffer.trim());
+        if !cmd.is_empty() {
+            if self.history.last() != Some(&cmd.to_string()) {
+                self.history.push(cmd.to_string());
+                self.save_history();
+            }
+            self.history_idx = self.history.len();
+        }
+
         let parts: Vec<&str> = cmd.split_whitespace().collect();
         if parts.is_empty() { return; }
 
@@ -503,6 +580,25 @@ impl Shell {
                 self.windows.push(win);
                 self.active_idx = self.windows.len() - 1;
             },
+            "nano" => {
+                if parts.len() < 2 {
+                    self.print("Usage: nano <file>\n");
+                } else {
+                    if self.windows.len() >= MAX_WINDOWS {
+                        self.print("Error: Maximum window limit reached.\n");
+                        return;
+                    }
+                    let filename = parts[1].to_string();
+                    let content = fs::read(&self.current_dir, &filename)
+                        .and_then(|d| String::from_utf8(d).ok())
+                        .unwrap_or_default();
+                    
+                    let mut win = compositor::Window::new(100, 100, 600, 450, &format!("Nano - {}", filename));
+                    win.print(&content);
+                    self.windows.push(win);
+                    self.active_idx = self.windows.len() - 1;
+                }
+            },
             "run" => {
                 if parts.len() < 2 { self.print("Usage: run <filename>\n"); } else {
                     if let Some(file) = fs::list_files().iter().find(|f| f.name.contains(parts[1])) {
@@ -729,6 +825,19 @@ impl Shell {
         
         win.print("\n----------------------------------\n");
         win.print("Double-click to open (Simulated)\n");
+    }
+
+    pub fn update_nano(win: &mut compositor::Window) {
+        // Nano is mostly static until input happens, but we can draw a status bar
+        let title = win.title.clone();
+        let filename = title.trim_start_matches("Nano - ");
+        
+        // Draw status bar at the bottom (simulated by printing at the end)
+        // In a real TUI we'd use coordinates, but here we just ensure the buffer is clean
+        // and has the status bar.
+        
+        // win.clear(); // Don't clear every frame or we lose the buffer!
+        // Instead, we'll handle typing in main.rs and only re-draw decorations here if needed.
     }
 }
 

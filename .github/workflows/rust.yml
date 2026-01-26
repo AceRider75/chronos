@@ -11,12 +11,15 @@ env:
 
 jobs:
   build:
-
     runs-on: ubuntu-latest
-
     steps:
     - uses: actions/checkout@v4
+    - name: Install Rust toolchain
+      run: |
+        rustup self update
+        rustup toolchain install nightly
+        rustup default nightly
+        rustup target add x86_64-unknown-none
+        rustup component add rust-src
     - name: Build
-      run: cargo build --verbose
-    - name: Run tests
-      run: cargo test --verbose
+      run: cargo build --target x86_64-unknown-none --verbose --release

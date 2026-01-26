@@ -23,6 +23,7 @@ pub struct Window {
     // New Fields for Window Management
     pub maximized: bool,
     pub saved_rect: Option<(usize, usize, usize, usize)>, // x, y, w, h
+    pub text_buffer: alloc::string::String,
 }
 
 impl Window {
@@ -36,6 +37,7 @@ impl Window {
             title: alloc::string::String::from(title),
             maximized: false,
             saved_rect: None,
+            text_buffer: alloc::string::String::new(),
         };
         
         win.draw_decorations();
@@ -100,6 +102,7 @@ impl Window {
         // Reset Cursor to top-left of CONTENT area
         self.cursor_x = BORDER_WIDTH + 2;
         self.cursor_y = TITLE_HEIGHT + 2;
+        self.text_buffer.clear();
     }
 
     pub fn realloc_buffer(&mut self) {
@@ -109,6 +112,7 @@ impl Window {
 
 
     pub fn draw_char(&mut self, c: char) {
+        self.text_buffer.push(c);
         match c {
             '\n' => {
                 self.cursor_x = BORDER_WIDTH + 4;
