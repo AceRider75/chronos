@@ -2,6 +2,7 @@ use crate::writer;
 use limine::request::ModuleRequest;
 use alloc::vec::Vec;
 use alloc::string::{String, ToString};
+use alloc::format;
 use spin::Mutex;
 use lazy_static::lazy_static;
 
@@ -134,6 +135,143 @@ pub fn read(path: &str, name: &str) -> Option<Vec<u8>> {
     }
     None
 }
+
+// --- NEW CORE FUNCTIONS ---
+
+pub fn copy_node(src_path: &str, src_name: &str, dest_path: &str, dest_name: &str) -> bool {
+    let mut root = ROOT.lock();
+    
+    // 1. Get source node
+    let src_node = {
+        if let Some(dir) = find_dir_mut(&mut root, src_path) {
+            if let Node::Directory { children, .. } = dir {
+                if let Some(node) = children.iter().find(|c| c.name() == src_name) {
+                    node.clone()
+                } else {
+                    return false;
+                }
+            } else {
+                return false;
+            }
+        } else {
+            return false;
+        }
+    };
+
+    // 2. Rename if needed
+    let mut new_node = src_node;
+    match &mut new_node {
+        Node::File { name, .. } => *name = dest_name.to_string(),
+        Node::Directory { name, .. } => *name = dest_name.to_string(),
+    }
+
+    // 3. Place in destination
+    if let Some(dest_dir) = find_dir_mut(&mut root, dest_path) {
+        if let Node::Directory { children, .. } = dest_dir {
+            // Remove existing if any
+            if let Some(pos) = children.iter().position(|c| c.name() == dest_name) {
+                children.remove(pos);
+            }
+            children.push(new_node);
+            return true;
+        }
+    }
+    false
+}
+
+pub fn move_node(src_path: &str, src_name: &str, dest_path: &str, dest_name: &str) -> bool {
+    let mut root = ROOT.lock();
+    
+    // 1. Remove source node
+    let mut src_node = {
+        if let Some(dir) = find_dir_mut(&mut root, src_path) {
+            if let Node::Directory { children, .. } = dir {
+                if let Some(pos) = children.iter().position(|c| c.name() == src_name) {
+                    children.remove(pos)
+                } else {
+                    return false;
+                }
+            } else {
+                return false;
+            }
+        } else {
+            return false;
+        }
+    };
+
+    // 2. Rename
+    match &mut src_node {
+        Node::File { name, .. } => *name = dest_name.to_string(),
+        Node::Directory { name, .. } => *name = dest_name.to_string(),
+    }
+
+    // 3. Place in destination
+    if let Some(dest_dir) = find_dir_mut(&mut root, dest_path) {
+        if let Node::Directory { children, .. } = dest_dir {
+            if let Some(pos) = children.iter().position(|c| c.name() == dest_name) {
+                children.remove(pos);
+            }
+            children.push(src_node);
+            return true;
+        }
+    }
+    false
+}
+
+pub struct NodeInfo {
+    pub name: String,
+    pub is_dir: bool,
+    pub size: usize,
+    pub child_count: usize,
+}
+
+pub fn get_node_info(path: &str, name: &str) -> Option<NodeInfo> {
+    let mut root = ROOT.lock();
+    let dir = find_dir_mut(&mut root, path)?;
+    if let Node::Directory { children, .. } = dir {
+        let node = children.iter().find(|c| c.name() == name)?;
+        match node {
+            Node::File { name, data } => Some(NodeInfo {
+                name: name.clone(),
+                is_dir: false,
+                size: data.len(),
+                child_count: 0,
+            }),
+            Node::Directory { name, children } => Some(NodeInfo {
+                name: name.clone(),
+                is_dir: true,
+                size: 0, // Directories don't have "size" in this simple VFS
+                child_count: children.len(),
+            }),
+        }
+    } else {
+        None
+    }
+}
+
+pub fn walk_tree<F>(path: &str, mut callback: F) 
+where F: FnMut(&str, &Node) {
+    let mut root = ROOT.lock();
+    if let Some(start_node) = find_dir_mut(&mut root, path) {
+        walk_recursive(path, start_node, &mut callback);
+    }
+}
+
+fn walk_recursive<F>(current_path: &str, node: &Node, callback: &mut F)
+where F: FnMut(&str, &Node) {
+    callback(current_path, node);
+    if let Node::Directory { name: _, children } = node {
+        for child in children {
+            let next_path = if current_path == "/" {
+                format!("/{}", child.name())
+            } else {
+                format!("{}/{}", current_path, child.name())
+            };
+            walk_recursive(&next_path, child, callback);
+        }
+    }
+}
+
 
 pub fn init() {
     // 1. Try to load from disk first

@@ -257,6 +257,169 @@ impl Shell {
             "pwd" => {
                 self.print(&format!("{}\n", self.current_dir));
             },
+            "cp" => {
+                if parts.len() < 3 {
+                    self.print("Usage: cp <src> <dest>\n");
+                } else {
+                    if fs::copy_node(&self.current_dir, parts[1], &self.current_dir, parts[2]) {
+                        self.print(&format!("Copied '{}' to '{}'.\n", parts[1], parts[2]));
+                        fs::save_to_disk();
+                    } else {
+                        self.print("Error: Could not copy.\n");
+                    }
+                }
+            },
+            "mv" => {
+                if parts.len() < 3 {
+                    self.print("Usage: mv <src> <dest>\n");
+                } else {
+                    if fs::move_node(&self.current_dir, parts[1], &self.current_dir, parts[2]) {
+                        self.print(&format!("Moved '{}' to '{}'.\n", parts[1], parts[2]));
+                        fs::save_to_disk();
+                    } else {
+                        self.print("Error: Could not move.\n");
+                    }
+                }
+            },
+            "find" => {
+                if parts.len() < 2 {
+                    self.print("Usage: find <pattern>\n");
+                } else {
+                    let pattern = parts[1];
+                    fs::walk_tree("/", |path, node| {
+                        if node.name().contains(pattern) {
+                            self.print(&format!("{}\n", path));
+                        }
+                    });
+                }
+            },
+            "du" => {
+                let mut total_size = 0;
+                fs::walk_tree(&self.current_dir, |_, node| {
+                    if let fs::Node::File { data, .. } = node {
+                        total_size += data.len();
+                    }
+                });
+                self.print(&format!("Total size: {} bytes\n", total_size));
+            },
+            "stat" => {
+                if parts.len() < 2 {
+                    self.print("Usage: stat <file>\n");
+                } else {
+                    if let Some(info) = fs::get_node_info(&self.current_dir, parts[1]) {
+                        self.print(&format!("Name: {}\n", info.name));
+                        self.print(&format!("Type: {}\n", if info.is_dir { "Directory" } else { "File" }));
+                        if !info.is_dir {
+                            self.print(&format!("Size: {} bytes\n", info.size));
+                        } else {
+                            self.print(&format!("Children: {}\n", info.child_count));
+                        }
+                    } else {
+                        self.print("Error: Not found.\n");
+                    }
+                }
+            },
+            "head" => {
+                if parts.len() < 2 {
+                    self.print("Usage: head <file> [-n lines]\n");
+                } else {
+                    let mut n = 10;
+                    if parts.len() > 3 && parts[2] == "-n" {
+                        n = parts[3].parse().unwrap_or(10);
+                    }
+                    if let Some(data) = fs::read(&self.current_dir, parts[1]) {
+                        if let Ok(s) = String::from_utf8(data) {
+                            for line in s.lines().take(n) {
+                                self.print(line);
+                                self.print("\n");
+                            }
+                        }
+                    } else {
+                        self.print("Error: File not found.\n");
+                    }
+                }
+            },
+            "tail" => {
+                if parts.len() < 2 {
+                    self.print("Usage: tail <file> [-n lines]\n");
+                } else {
+                    let mut n = 10;
+                    if parts.len() > 3 && parts[2] == "-n" {
+                        n = parts[3].parse().unwrap_or(10);
+                    }
+                    if let Some(data) = fs::read(&self.current_dir, parts[1]) {
+                        if let Ok(s) = String::from_utf8(data) {
+                            let lines: Vec<&str> = s.lines().collect();
+                            let start = if lines.len() > n { lines.len() - n } else { 0 };
+                            for line in &lines[start..] {
+                                self.print(line);
+                                self.print("\n");
+                            }
+                        }
+                    } else {
+                        self.print("Error: File not found.\n");
+                    }
+                }
+            },
+            "wc" => {
+                if parts.len() < 2 {
+                    self.print("Usage: wc <file>\n");
+                } else {
+                    if let Some(data) = fs::read(&self.current_dir, parts[1]) {
+                        let bytes = data.len();
+                        if let Ok(s) = String::from_utf8(data) {
+                            let lines = s.lines().count();
+                            let words = s.split_whitespace().count();
+                            self.print(&format!("{} {} {} {}\n", lines, words, bytes, parts[1]));
+                        } else {
+                            self.print(&format!("- - {} {}\n", bytes, parts[1]));
+                        }
+                    } else {
+                        self.print("Error: File not found.\n");
+                    }
+                }
+            },
+            "echo" => {
+                let mut redirect_idx = None;
+                let mut append = false;
+                for (i, part) in parts.iter().enumerate() {
+                    if *part == ">" {
+                        redirect_idx = Some(i);
+                        break;
+                    } else if *part == ">>" {
+                        redirect_idx = Some(i);
+                        append = true;
+                        break;
+                    }
+                }
+
+                if let Some(idx) = redirect_idx {
+                    if idx + 1 < parts.len() {
+                        let text = parts[1..idx].join(" ");
+                        let filename = parts[idx+1];
+                        let mut final_data = if append {
+                            fs::read(&self.current_dir, filename).unwrap_or_default()
+                        } else {
+                            Vec::new()
+                        };
+                        final_data.extend_from_slice(text.as_bytes());
+                        final_data.push(b'\n');
+                        
+                        if fs::touch(&self.current_dir, filename, final_data) {
+                            fs::save_to_disk();
+                        } else {
+                            self.print("Error: Could not write to file.\n");
+                        }
+                    } else {
+                        self.print("Usage: echo <text> [>|>> file]\n");
+                    }
+                } else {
+                    let text = parts[1..].join(" ");
+                    self.print(&text);
+                    self.print("\n");
+                }
+            },
+
             "term" => self.spawn_terminal(),
             "browser" => {
                 if self.windows.len() >= MAX_WINDOWS {
