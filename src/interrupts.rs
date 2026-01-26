@@ -37,7 +37,7 @@ pub fn enable_listening() {
 
 lazy_static! {
     static ref KEYBOARD: Mutex<Keyboard<layouts::Us104Key, ScancodeSet1>> =
-        Mutex::new(Keyboard::new(ScancodeSet1::new(), layouts::Us104Key, HandleControl::Ignore));
+        Mutex::new(Keyboard::new(ScancodeSet1::new(), layouts::Us104Key, HandleControl::MapLettersToUnicode));
 }
 
 // --- IDT SETUP ---
@@ -141,10 +141,10 @@ extern "x86-interrupt" fn keyboard_interrupt_handler(_stack_frame: InterruptStac
                 DecodedKey::RawKey(k) => {
                     use pc_keyboard::KeyCode;
                     match k {
-                        KeyCode::ArrowUp => input::push_key('\x11'),
-                        KeyCode::ArrowDown => input::push_key('\x12'),
-                        KeyCode::ArrowLeft => input::push_key('\x13'),
-                        KeyCode::ArrowRight => input::push_key('\x14'),
+                        KeyCode::ArrowUp => input::push_key('\u{E000}'),
+                        KeyCode::ArrowDown => input::push_key('\u{E001}'),
+                        KeyCode::ArrowLeft => input::push_key('\u{E002}'),
+                        KeyCode::ArrowRight => input::push_key('\u{E003}'),
                         _ => {}
                     }
                 },

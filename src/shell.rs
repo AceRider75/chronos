@@ -111,7 +111,7 @@ impl Shell {
                         self.print("\x08"); 
                     }
                 }
-                '\x11' => { // Up Arrow
+                '\u{E000}' => { // Up Arrow
                     if !self.history.is_empty() && self.history_idx > 0 {
                         self.history_idx -= 1;
                         // Clear current line
@@ -121,7 +121,7 @@ impl Shell {
                         self.print(&cmd);
                     }
                 }
-                '\x12' => { // Down Arrow
+                '\u{E001}' => { // Down Arrow
                     if self.history_idx < self.history.len() {
                         self.history_idx += 1;
                         // Clear current line
