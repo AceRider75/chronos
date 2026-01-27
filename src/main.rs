@@ -125,14 +125,13 @@ pub extern "C" fn _start() -> ! {
     let mut drag_offset_y = 0;
 
     // 6. MAIN LOOP
+    const FRAME_BUDGET_CYCLES: u64 = 50_000_000;
+
     loop {
         let start = unsafe { core::arch::x86_64::_rdtsc() };
 
         // FIX: Use Global Scheduler instead of local variable
         scheduler::SCHEDULER.lock().execute_frame();
-
-        let end = unsafe { core::arch::x86_64::_rdtsc() };
-        let elapsed = end - start;
 
         // --- GUI LOGIC ---
         let (mx, my, btn) = mouse::get_state();
@@ -236,6 +235,19 @@ pub extern "C" fn _start() -> ! {
                 }
             }
 
+            // --- BUDGET BORDERS ---
+            let shell_load = {
+                let sched = scheduler::SCHEDULER.lock();
+                let shell_task = sched.tasks.iter().find(|t| t.name == "Shell");
+                if let Some(t) = shell_task {
+                    (t.last_cost * 100).checked_div(t.budget).unwrap_or(0)
+                } else { 0 }
+            };
+
+            if let Some(win) = shell_mutex.windows.get_mut(shell_mutex.active_idx) {
+                win.set_load_color(shell_load as usize);
+            }
+
             // D. Render
             let mut draw_list: alloc::vec::Vec<&compositor::Window> = alloc::vec::Vec::new();
             
@@ -255,19 +267,30 @@ pub extern "C" fn _start() -> ! {
             desktop.render(&draw_list, Some(shell_mutex.active_idx));
         }
 
+        let end_work = unsafe { core::arch::x86_64::_rdtsc() };
+        let elapsed = end_work - start;
+
         // --- FUEL GAUGE ---
-        let cycle_budget = 50_000_000;
-        let mut bar_width = ((elapsed as u128 * width as u128) / cycle_budget as u128) as usize;
+        let mut bar_width = ((elapsed as u128 * width as u128) / FRAME_BUDGET_CYCLES as u128) as usize;
         if bar_width > width { bar_width = width; }
         
-        let color = if bar_width < width { 0x0000FF00 } else { 0x00FF0000 };
-        for y in (height-5)..height {
+        let color = if bar_width < (width * 8 / 10) { 0x0000FF00 } else if bar_width < width { 0x00FFFF00 } else { 0x00FF0000 };
+        for y in (height-8)..height {
             for x in 0..width {
                 unsafe {
                     let offset = y * pitch + x;
-                    if x < bar_width { *video_ptr.add(offset) = color; }
+                    if x < bar_width { 
+                        *video_ptr.add(offset) = color; 
+                    } else {
+                        *video_ptr.add(offset) = 0x00222222; // Dark background
+                    }
                 }
             }
+        }
+
+        // --- WAIT FOR FRAME BOUNDARY ---
+        while unsafe { core::arch::x86_64::_rdtsc() } - start < FRAME_BUDGET_CYCLES {
+            core::hint::spin_loop();
         }
     }
 }

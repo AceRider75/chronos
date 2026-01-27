@@ -28,6 +28,7 @@ pub struct Window {
     pub selection_start: Option<usize>,
     pub selection_end: Option<usize>,
     pub is_selecting: bool,
+    pub border_color: u32,
 }
 
 impl Window {
@@ -46,6 +47,7 @@ impl Window {
             selection_start: None,
             selection_end: None,
             is_selecting: false,
+            border_color: BORDER_COLOR,
         };
         
         win.draw_decorations();
@@ -53,20 +55,20 @@ impl Window {
     }
 
     pub fn draw_decorations(&mut self) {
-        // 1. Draw Main Border (Background Fill first)
-        self.data.fill(BORDER_COLOR);
+        // 1. Draw Borders
+        // Top
+        self.draw_rect(0, 0, self.width, BORDER_WIDTH, self.border_color);
+        // Bottom
+        self.draw_rect(0, self.height - BORDER_WIDTH, self.width, BORDER_WIDTH, self.border_color);
+        // Left
+        self.draw_rect(0, 0, BORDER_WIDTH, self.height, self.border_color);
+        // Right
+        self.draw_rect(self.width - BORDER_WIDTH, 0, BORDER_WIDTH, self.height, self.border_color);
 
         // 2. Draw Title Bar
-        for y in BORDER_WIDTH..TITLE_HEIGHT {
-            for x in BORDER_WIDTH..(self.width - BORDER_WIDTH) {
-                let idx = y * self.width + x;
-                self.data[idx] = TITLE_COLOR;
-            }
-        }
+        self.draw_rect(BORDER_WIDTH, BORDER_WIDTH, self.width - 2 * BORDER_WIDTH, TITLE_HEIGHT - BORDER_WIDTH, TITLE_COLOR);
 
         // 3. Draw Buttons (Right aligned)
-        // [X] Close   : Right-most
-        // [ ] Maximize: Left of Close
         let btn_w = 16;
         let btn_h = 14;
         let btn_y = BORDER_WIDTH + 2;
@@ -78,19 +80,20 @@ impl Window {
         // Maximize Button [ ]
         let max_x = close_x - btn_w - 4;
         self.draw_rect(max_x, btn_y, btn_w, btn_h, 0xFFCCCCCC); // Grey
+    }
 
-        // 4. Draw Content Area (Black Box)
-        // Starts below Title Bar
-        let content_top = TITLE_HEIGHT;
-        let content_bottom = self.height - BORDER_WIDTH;
-        let content_left = BORDER_WIDTH;
-        let content_right = self.width - BORDER_WIDTH;
+    pub fn set_load_color(&mut self, usage_percent: usize) {
+        let new_color = if usage_percent < 50 {
+            0xFF00FF00 // Green
+        } else if usage_percent < 90 {
+            0xFFFFFF00 // Yellow
+        } else {
+            0xFFFF0000 // Red
+        };
 
-        for y in content_top..content_bottom {
-            for x in content_left..content_right {
-                let idx = y * self.width + x;
-                self.data[idx] = CONTENT_COLOR;
-            }
+        if self.border_color != new_color {
+            self.border_color = new_color;
+            self.draw_decorations();
         }
     }
 
