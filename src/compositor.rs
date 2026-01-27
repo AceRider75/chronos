@@ -7,8 +7,8 @@ use noto_sans_mono_bitmap::{get_raster, FontWeight, RasterHeight};
 const BORDER_COLOR: u32 = 0xFFC0C0C0; // Light Grey
 const TITLE_COLOR: u32 = 0xFF000080;  // Navy Blue
 const CONTENT_COLOR: u32 = 0xFF000000; // Black
-const BORDER_WIDTH: usize = 2;
-const TITLE_HEIGHT: usize = 20;
+pub const BORDER_WIDTH: usize = 2;
+pub const TITLE_HEIGHT: usize = 20;
 
 pub struct Window {
     pub x: usize,
@@ -24,6 +24,10 @@ pub struct Window {
     pub maximized: bool,
     pub saved_rect: Option<(usize, usize, usize, usize)>, // x, y, w, h
     pub text_buffer: alloc::string::String,
+    pub cursor_visible: bool,
+    pub selection_start: Option<usize>,
+    pub selection_end: Option<usize>,
+    pub is_selecting: bool,
 }
 
 impl Window {
@@ -38,6 +42,10 @@ impl Window {
             maximized: false,
             saved_rect: None,
             text_buffer: alloc::string::String::new(),
+            cursor_visible: true,
+            selection_start: None,
+            selection_end: None,
+            is_selecting: false,
         };
         
         win.draw_decorations();
@@ -131,6 +139,21 @@ impl Window {
         self.data = alloc::vec![0; size];
     }
 
+    pub fn truncate_text_buffer(&mut self, len: usize) {
+        let chars: alloc::vec::Vec<char> = self.text_buffer.chars().collect();
+        if len < chars.len() {
+            self.text_buffer = chars[..len].iter().collect();
+        }
+    }
+
+    pub fn clear_from(&mut self, y: usize) {
+        let bottom_margin = if self.title.starts_with("Nano - ") { 55 } else { BORDER_WIDTH };
+        let h = self.height.saturating_sub(bottom_margin);
+        if y < h {
+            self.draw_rect(BORDER_WIDTH, y, self.width - 2 * BORDER_WIDTH, h - y, 0xFF000000);
+        }
+    }
+
 
     pub fn draw_char(&mut self, c: char) {
         let bottom_margin = if self.title.starts_with("Nano - ") { 55 } else { BORDER_WIDTH };
@@ -187,6 +210,36 @@ impl Window {
     pub fn print(&mut self, text: &str) {
         for c in text.chars() {
             self.draw_char(c);
+        }
+    }
+
+    pub fn draw_char_no_buf(&mut self, c: char) {
+        let bottom_margin = if self.title.starts_with("Nano - ") { 55 } else { BORDER_WIDTH };
+        match c {
+            '\n' => {
+                self.cursor_x = BORDER_WIDTH + 4;
+                self.cursor_y += 18;
+            }
+            '\r' => {
+                self.cursor_x = BORDER_WIDTH + 4;
+            }
+            '\x08' => {
+                if self.cursor_x >= (BORDER_WIDTH + 4 + 9) {
+                    self.cursor_x -= 9;
+                }
+            }
+            _ => {
+                self.cursor_x += 9;
+            }
+        }
+
+        if self.cursor_x + 9 >= self.width - BORDER_WIDTH {
+            self.cursor_x = BORDER_WIDTH + 4;
+            self.cursor_y += 18;
+        }
+
+        if self.cursor_y + 18 >= self.height - bottom_margin {
+            self.scroll();
         }
     }
 
@@ -270,25 +323,129 @@ impl Window {
         }
         0
     }
+
+    pub fn draw_cursor(&mut self, color: u32) {
+        let cursor_w = 8;
+        let cursor_h = 16;
+        for y in 0..cursor_h {
+            for x in 0..cursor_w {
+                let px = self.cursor_x + x;
+                let py = self.cursor_y + y;
+                if px < self.width && py < self.height {
+                    let idx = py * self.width + px;
+                    self.data[idx] = color;
+                }
+            }
+        }
+    }
+
+    pub fn handle_mouse(&mut self, mx: usize, my: usize, btn: bool) {
+        if !btn {
+            self.is_selecting = false;
+            return;
+        }
+
+        let rel_x = mx.saturating_sub(self.x);
+        let rel_y = my.saturating_sub(self.y);
+        
+        if rel_x < BORDER_WIDTH || rel_x >= (self.width - BORDER_WIDTH) ||
+           rel_y < TITLE_HEIGHT || rel_y >= (self.height - BORDER_WIDTH) {
+            return;
+        }
+
+        let idx = self.pos_to_index(rel_x, rel_y);
+        
+        if !self.is_selecting {
+            self.is_selecting = true;
+            self.selection_start = Some(idx);
+        }
+        self.selection_end = Some(idx);
+    }
+
+    pub fn clear_selection(&mut self) {
+        self.selection_start = None;
+        self.selection_end = None;
+        self.is_selecting = false;
+    }
+
+    fn pos_to_index(&self, rx: usize, ry: usize) -> usize {
+        let mut cur_x = BORDER_WIDTH + 4;
+        let mut cur_y = TITLE_HEIGHT + 4;
+        let mut best_idx = 0;
+        let mut min_dist = usize::MAX;
+
+        for (i, c) in self.text_buffer.chars().enumerate() {
+            // Check distance to this char
+            let dx = rx.as_i32() - cur_x.as_i32();
+            let dy = ry.as_i32() - cur_y.as_i32();
+            let dist = (dx*dx + dy*dy) as usize;
+            if dist < min_dist {
+                min_dist = dist;
+                best_idx = i;
+            }
+
+            match c {
+                '\n' => {
+                    cur_x = BORDER_WIDTH + 4;
+                    cur_y += 18;
+                }
+                _ => {
+                    cur_x += 9;
+                    if cur_x + 9 >= self.width - BORDER_WIDTH {
+                        cur_x = BORDER_WIDTH + 4;
+                        cur_y += 18;
+                    }
+                }
+            }
+        }
+        
+        // Also check distance to the very end (after last char)
+        let dx = rx.as_i32() - cur_x.as_i32();
+        let dy = ry.as_i32() - cur_y.as_i32();
+        let dist = (dx*dx + dy*dy) as usize;
+        if dist < min_dist {
+            best_idx = self.text_buffer.chars().count();
+        }
+
+        best_idx
+    }
+
+    pub fn get_selected_text(&self) -> alloc::string::String {
+        if let (Some(start), Some(end)) = (self.selection_start, self.selection_end) {
+            let (s, e) = if start < end { (start, end) } else { (end, start) };
+            let chars: alloc::vec::Vec<char> = self.text_buffer.chars().collect();
+            if s < chars.len() {
+                let end_idx = core::cmp::min(e, chars.len());
+                return chars[s..end_idx].iter().collect();
+            }
+        }
+        alloc::string::String::new()
+    }
 }
+
+trait AsI32 { fn as_i32(self) -> i32; }
+impl AsI32 for usize { fn as_i32(self) -> i32 { self as i32 } }
 
 pub struct Compositor {
     width: usize,
     height: usize,
     backbuffer: Vec<u32>,
+    pub frame_count: u64,
 }
 
 impl Compositor {
     pub fn new(width: usize, height: usize) -> Self {
         let size = width * height;
         let backbuffer = vec![0x00102040; size];
-        Compositor { width, height, backbuffer }
+        Compositor { width, height, backbuffer, frame_count: 0 }
     }
 
-    pub fn render(&mut self, windows: &[&Window]) {
+    pub fn render(&mut self, windows: &[&Window], active_idx: Option<usize>) {
+        self.frame_count += 1;
         self.backbuffer.fill(0x00102040); // Clear to Blue
 
-        for win in windows {
+        for (i, win) in windows.iter().enumerate() {
+            // Draw window content
             for row in 0..win.height {
                 for col in 0..win.width {
                     let screen_y = win.y + row;
@@ -297,10 +454,79 @@ impl Compositor {
                     if screen_x < self.width && screen_y < self.height {
                         let idx = screen_y * self.width + screen_x;
                         let win_idx = row * win.width + col;
-                        
-                        // Transparency check (if we wanted shaped windows), 
-                        // but for now just copy opaque.
                         self.backbuffer[idx] = win.data[win_idx];
+                    }
+                }
+            }
+
+            // Draw selection highlight
+            if let (Some(start), Some(end)) = (win.selection_start, win.selection_end) {
+                let (s, e) = if start < end { (start, end) } else { (end, start) };
+                let mut cur_x = BORDER_WIDTH + 4;
+                let mut cur_y = TITLE_HEIGHT + 4;
+                
+                for (idx, c) in win.text_buffer.chars().enumerate() {
+                    if idx >= s && idx < e {
+                        // Draw highlight rect
+                        for hy in 0..18 {
+                            for hx in 0..9 {
+                                let sx = win.x + cur_x + hx;
+                                let sy = win.y + cur_y + hy;
+                                if sx < self.width && sy < self.height {
+                                    let b_idx = sy * self.width + sx;
+                                    // Blend with blue (0x0000FF)
+                                    let old_color = self.backbuffer[b_idx];
+                                    let r = (old_color >> 16) & 0xFF;
+                                    let g = (old_color >> 8) & 0xFF;
+                                    let b = old_color & 0xFF;
+                                    // Simple 50% blend
+                                    let new_r = r / 2;
+                                    let new_g = g / 2;
+                                    let new_b = (b / 2) + 128;
+                                    self.backbuffer[b_idx] = (new_r << 16) | (new_g << 8) | new_b;
+                                }
+                            }
+                        }
+                    }
+
+                    match c {
+                        '\n' => {
+                            cur_x = BORDER_WIDTH + 4;
+                            cur_y += 18;
+                        }
+                        _ => {
+                            cur_x += 9;
+                            if cur_x + 9 >= win.width - BORDER_WIDTH {
+                                cur_x = BORDER_WIDTH + 4;
+                                cur_y += 18;
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Draw cursor for active window
+            if let Some(_active) = active_idx {
+                // The windows list passed to render is usually in Z-order.
+                // We need to know which window in the list is the active one.
+                // However, the caller (main.rs) knows the active window.
+                // Let's assume the LAST window in the list is the active one if it matches active_idx.
+                // Actually, let's just check if this window is the active one.
+                // Since we don't have a unique ID, we'll check if it's the last one in the list
+                // because main.rs pushes the active window last.
+                if i == windows.len() - 1 && (self.frame_count / 30) % 2 == 0 {
+                    // Draw cursor directly onto backbuffer to avoid polluting window data
+                    let cursor_w = 8;
+                    let cursor_h = 16;
+                    for cy in 0..cursor_h {
+                        for cx in 0..cursor_w {
+                            let sx = win.x + win.cursor_x + cx;
+                            let sy = win.y + win.cursor_y + cy;
+                            if sx < self.width && sy < self.height {
+                                let idx = sy * self.width + sx;
+                                self.backbuffer[idx] = 0xFFFFFFFF; // White cursor
+                            }
+                        }
                     }
                 }
             }

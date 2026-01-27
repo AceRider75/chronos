@@ -17,6 +17,9 @@ pub struct Shell {
     pub history_idx: usize,
     pub clipboard: String,
     pub nano_status: String,
+    pub insertion_point: usize,
+    pub prompt_start_idx: usize,
+    pub prompt_start_y: usize,
 }
 
 const MAX_WINDOWS: usize = 15;
@@ -24,7 +27,6 @@ const MAX_WINDOWS: usize = 15;
 impl Shell {
     pub fn new() -> Self {
         let mut win = compositor::Window::new(50, 50, 700, 400, "Terminal 1");
-        win.print("Chronos Terminal v1.0\n> ");
         
         let mut windows = Vec::new();
         windows.push(win);
@@ -39,7 +41,19 @@ impl Shell {
             history_idx: 0,
             clipboard: String::new(),
             nano_status: String::new(),
+            insertion_point: 0,
+            prompt_start_idx: 0,
+            prompt_start_y: compositor::TITLE_HEIGHT + 4,
         };
+        
+        // Correct initialization for the first window
+        if let Some(win) = s.windows.get_mut(0) {
+            win.print("Chronos Terminal v1.0\n");
+            s.prompt_start_idx = win.text_buffer.chars().count();
+            s.prompt_start_y = win.cursor_y;
+            win.print("> ");
+        }
+
         s.load_history();
         s
     }
@@ -143,37 +157,72 @@ impl Shell {
                     self.print("\n");
                     self.execute_command();
                     self.command_buffer.clear();
+                    self.insertion_point = 0;
+                    if let Some(win) = self.windows.get_mut(self.active_idx) {
+                        self.prompt_start_idx = win.text_buffer.chars().count();
+                        self.prompt_start_y = win.cursor_y;
+                    }
                     self.print("> "); 
                 }
                 '\x08' => {
-                    if !self.command_buffer.is_empty() {
-                        self.command_buffer.pop();
-                        self.print("\x08"); 
+                    if self.insertion_point > 0 {
+                        self.insertion_point -= 1;
+                        self.command_buffer.remove(self.insertion_point);
+                        self.redraw_command_line();
                     }
                 }
                 '\u{E000}' => { // Up Arrow
                     if !self.history.is_empty() && self.history_idx > 0 {
                         self.history_idx -= 1;
-                        // Clear current line
-                        for _ in 0..self.command_buffer.len() { self.print("\x08"); }
                         self.command_buffer = self.history[self.history_idx].clone();
-                        let cmd = self.command_buffer.clone();
-                        self.print(&cmd);
+                        self.insertion_point = self.command_buffer.len();
+                        self.redraw_command_line();
                     }
                 }
                 '\u{E001}' => { // Down Arrow
                     if self.history_idx < self.history.len() {
                         self.history_idx += 1;
-                        // Clear current line
-                        for _ in 0..self.command_buffer.len() { self.print("\x08"); }
                         if self.history_idx < self.history.len() {
                             self.command_buffer = self.history[self.history_idx].clone();
                         } else {
                             self.command_buffer.clear();
                         }
-                        let cmd = self.command_buffer.clone();
-                        self.print(&cmd);
+                        self.insertion_point = self.command_buffer.len();
+                        self.redraw_command_line();
                     }
+                }
+                '\u{E002}' => { // Left Arrow
+                    if self.insertion_point > 0 {
+                        self.insertion_point -= 1;
+                        self.redraw_command_line();
+                    }
+                }
+                '\u{E003}' => { // Right Arrow
+                    if self.insertion_point < self.command_buffer.len() {
+                        self.insertion_point += 1;
+                        self.redraw_command_line();
+                    }
+                }
+                '\u{E006}' => { // Delete Key
+                    if self.insertion_point < self.command_buffer.len() {
+                        self.command_buffer.remove(self.insertion_point);
+                        self.redraw_command_line();
+                    }
+                }
+                '\u{E004}' => { // Copy (Ctrl+Shift+C)
+                    if let Some(win) = self.windows.get_mut(self.active_idx) {
+                        self.clipboard = win.get_selected_text();
+                        win.clear_selection();
+                    }
+                }
+                '\u{E005}' => { // Paste (Ctrl+Shift+V)
+                    let clip = self.clipboard.clone();
+                    for c in clip.chars() {
+                        if c == '\n' || c == '\r' { continue; }
+                        self.command_buffer.insert(self.insertion_point, c);
+                        self.insertion_point += 1;
+                    }
+                    self.redraw_command_line();
                 }
                 '~' => {
                      let now = unsafe { core::arch::x86_64::_rdtsc() };
@@ -183,10 +232,9 @@ impl Shell {
                      }
                 },
                 _ => {
-                    self.command_buffer.push(c);
-                    let mut s = String::new();
-                    s.push(c);
-                    self.print(&s);
+                    self.command_buffer.insert(self.insertion_point, c);
+                    self.insertion_point += 1;
+                    self.redraw_command_line();
                 }
             }
         }
@@ -883,6 +931,34 @@ impl Shell {
         // Row 2
         win.print_fixed(5, h - 15, "^X Exit  ^R ReadFile ^\u{005C} Replace ^U Uncut  ^T ToSpell ^_ GoToLine", 0xFFFFFFFF);
     }
+
+    fn redraw_command_line(&mut self) {
+        if let Some(win) = self.windows.get_mut(self.active_idx) {
+            // 1. Clean up the text buffer and the screen
+            win.truncate_text_buffer(self.prompt_start_idx);
+            win.cursor_x = compositor::BORDER_WIDTH + 4;
+            win.cursor_y = self.prompt_start_y;
+            win.clear_from(win.cursor_y);
+            
+            // 2. Reprint the prompt and the full command
+            win.print("> ");
+            let cmd = self.command_buffer.clone();
+            win.print(&cmd);
+            
+            // 3. Calculate and set the correct cursor position for the insertion point
+            // We do this by "re-printing" up to the insertion point
+            win.cursor_x = compositor::BORDER_WIDTH + 4;
+            win.cursor_y = self.prompt_start_y;
+            win.draw_char_no_buf('>');
+            win.draw_char_no_buf(' ');
+            let chars: alloc::vec::Vec<char> = self.command_buffer.chars().collect();
+            for i in 0..self.insertion_point {
+                if i < chars.len() {
+                    win.draw_char_no_buf(chars[i]);
+                }
+            }
+        }
+    }
 }
 
 static mut SHELL: Option<Shell> = None;
@@ -1016,7 +1092,7 @@ pub fn resume_shell() -> ! {
                 draw_list.push(win);
             }
 
-            desktop.render(&draw_list);
+            desktop.render(&draw_list, Some(shell_mutex.active_idx));
         }
     }
 }

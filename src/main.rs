@@ -188,11 +188,31 @@ pub extern "C" fn _start() -> ! {
                             is_dragging = true;
                             drag_offset_x = mx - win.x;
                             drag_offset_y = my - win.y;
+                        } else {
+                            // 3. Pass to window for selection
+                            win.handle_mouse(mx, my, btn);
                         }
                     }
                 }
             } else if !btn {
                 is_dragging = false;
+                // Still pass to active window to handle button release
+                let active_idx = shell_mutex.active_idx;
+                if let Some(win) = shell_mutex.windows.get_mut(active_idx) {
+                    win.handle_mouse(mx, my, btn);
+                }
+            } else if btn && is_dragging {
+                // Already dragging, handled below
+            } else if btn {
+                // Clicked but not on a window? Clear active selection
+                let active_idx = shell_mutex.active_idx;
+                if let Some(win) = shell_mutex.windows.get_mut(active_idx) {
+                    if !win.contains(mx, my) {
+                        win.clear_selection();
+                    } else {
+                        win.handle_mouse(mx, my, btn);
+                    }
+                }
             }
 
             // B. Dragging
@@ -232,7 +252,7 @@ pub extern "C" fn _start() -> ! {
                 draw_list.push(win);
             }
 
-            desktop.render(&draw_list);
+            desktop.render(&draw_list, Some(shell_mutex.active_idx));
         }
 
         // --- FUEL GAUGE ---

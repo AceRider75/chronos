@@ -70,6 +70,10 @@ impl Fat32 {
         if !drive.identify() { return None; }
 
         let sector0 = drive.read_sectors(0, 1);
+        if sector0.is_empty() {
+            writer::print("[FAT] Error: Could not read boot sector.\n");
+            return None;
+        }
         let bpb = unsafe { &*(sector0.as_ptr() as *const BPB) };
 
         // Copy packed values to avoid unaligned access
@@ -81,7 +85,7 @@ impl Fat32 {
         let spc = bpb.sectors_per_cluster as u32;
 
         if bytes_per_sec != 512 {
-            writer::print("[FAT] Error: Non-512 byte sectors.\n");
+            writer::print(&format!("[FAT] Error: Non-512 byte sectors (found {}).\n", bytes_per_sec));
             return None;
         }
 
@@ -115,6 +119,10 @@ impl Fat32 {
     pub fn list_root(&self) {
         let root_lba = self.cluster_to_lba(self.root_cluster);
         let data = self.drive.read_sectors(root_lba, self.sectors_per_cluster as u8);
+        if data.is_empty() {
+            writer::print("[FAT] Error: Could not read root directory.\n");
+            return;
+        }
         
         writer::print("--- RAW DISK DUMP ---\n");
 
@@ -158,6 +166,7 @@ impl Fat32 {
     pub fn read_file(&self, filename: &str) -> Option<Vec<u8>> {
         let root_lba = self.cluster_to_lba(self.root_cluster);
         let data = self.drive.read_sectors(root_lba, self.sectors_per_cluster as u8);
+        if data.is_empty() { return None; }
 
         // 1. Find the file entry
         for i in (0..data.len()).step_by(32) {

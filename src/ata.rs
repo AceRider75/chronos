@@ -52,6 +52,12 @@ impl AtaDrive {
             
             for _ in 0..sectors {
                 self.wait_busy();
+                
+                // Check for Error bit (Bit 0)
+                if (Port::<u8>::new(STATUS_PORT).read() & 0x01) != 0 {
+                    return Vec::new(); // Error
+                }
+
                 self.wait_drq(); // Wait for Data Request bit
 
                 for _ in 0..256 { // 256 words = 512 bytes
@@ -113,7 +119,9 @@ impl AtaDrive {
     // Check if drive exists via Identify
     pub fn identify(&self) -> bool {
         unsafe {
+            self.wait_busy();
             Port::<u8>::new(DRIVE_PORT).write(if self.master { 0xA0 } else { 0xB0 });
+            self.wait_busy();
             Port::<u8>::new(COMMAND_PORT).write(CMD_IDENTIFY);
             
             if Port::<u8>::new(STATUS_PORT).read() == 0 { return false; }

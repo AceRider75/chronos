@@ -7,7 +7,10 @@ use x86_64::instructions::port::Port;
 use pc_keyboard::{layouts, DecodedKey, HandleControl, Keyboard, ScancodeSet1};
 use x86_64::VirtAddr;
 use crate::{state, input, writer, gdt};
-use core::sync::atomic::Ordering;
+use core::sync::atomic::{Ordering, AtomicBool};
+
+static CTRL_PRESSED: AtomicBool = AtomicBool::new(false);
+static SHIFT_PRESSED: AtomicBool = AtomicBool::new(false);
 
 // --- CONFIGURATION ---
 pub const PIC_1_OFFSET: u8 = 32;
@@ -135,19 +138,59 @@ extern "x86-interrupt" fn keyboard_interrupt_handler(_stack_frame: InterruptStac
     state::KEY_COUNT.fetch_add(1, Ordering::Relaxed);
 
     if let Ok(Some(key_event)) = keyboard.add_byte(scancode) {
-        if let Some(key) = keyboard.process_keyevent(key_event) {
-            match key {
-                DecodedKey::Unicode(character) => { input::push_key(character); },
-                DecodedKey::RawKey(k) => {
-                    use pc_keyboard::KeyCode;
-                    match k {
-                        KeyCode::ArrowUp => input::push_key('\u{E000}'),
-                        KeyCode::ArrowDown => input::push_key('\u{E001}'),
-                        KeyCode::ArrowLeft => input::push_key('\u{E002}'),
-                        KeyCode::ArrowRight => input::push_key('\u{E003}'),
-                        _ => {}
+        use pc_keyboard::KeyCode;
+        
+        // Track Modifiers
+        match key_event.code {
+            KeyCode::LControl | KeyCode::RControl => {
+                CTRL_PRESSED.store(key_event.state == pc_keyboard::KeyState::Down, Ordering::Relaxed);
+            }
+            KeyCode::LShift | KeyCode::RShift => {
+                SHIFT_PRESSED.store(key_event.state == pc_keyboard::KeyState::Down, Ordering::Relaxed);
+            }
+            _ => {}
+        }
+
+        let ctrl = CTRL_PRESSED.load(Ordering::Relaxed);
+        let shift = SHIFT_PRESSED.load(Ordering::Relaxed);
+
+        if ctrl && shift && key_event.state == pc_keyboard::KeyState::Down {
+            match key_event.code {
+                KeyCode::C => { input::push_key('\u{E004}'); },
+                KeyCode::V => { input::push_key('\u{E005}'); },
+                _ => {
+                    if let Some(key) = keyboard.process_keyevent(key_event) {
+                        match key {
+                            DecodedKey::Unicode(character) => { input::push_key(character); },
+                            DecodedKey::RawKey(k) => {
+                                match k {
+                                    KeyCode::ArrowUp => input::push_key('\u{E000}'),
+                                    KeyCode::ArrowDown => input::push_key('\u{E001}'),
+                                    KeyCode::ArrowLeft => input::push_key('\u{E002}'),
+                                    KeyCode::ArrowRight => input::push_key('\u{E003}'),
+                                    KeyCode::Delete => input::push_key('\u{E006}'),
+                                    _ => {}
+                                }
+                            },
+                        }
                     }
-                },
+                }
+            }
+        } else {
+            if let Some(key) = keyboard.process_keyevent(key_event) {
+                match key {
+                    DecodedKey::Unicode(character) => { input::push_key(character); },
+                    DecodedKey::RawKey(k) => {
+                        match k {
+                            KeyCode::ArrowUp => input::push_key('\u{E000}'),
+                            KeyCode::ArrowDown => input::push_key('\u{E001}'),
+                            KeyCode::ArrowLeft => input::push_key('\u{E002}'),
+                            KeyCode::ArrowRight => input::push_key('\u{E003}'),
+                            KeyCode::Delete => input::push_key('\u{E006}'),
+                            _ => {}
+                        }
+                    },
+                }
             }
         }
     }
