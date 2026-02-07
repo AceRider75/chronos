@@ -5,7 +5,6 @@ use pic8259::ChainedPics;
 use spin::Mutex;
 use x86_64::instructions::port::Port;
 use pc_keyboard::{layouts, DecodedKey, HandleControl, Keyboard, ScancodeSet1};
-use x86_64::VirtAddr;
 use crate::{state, input, writer, gdt, scheduler};
 use core::sync::atomic::{Ordering, AtomicBool};
 use crate::scheduler::{TaskContext, SCHEDULER, SCHEDULER_CONTEXT};
@@ -195,7 +194,6 @@ pub extern "C" fn timer_interrupt_handler() {
 }
 
 extern "C" fn handle_timer_preemption(context: *mut TaskContext) {
-    state::KEY_COUNT.fetch_add(1, Ordering::Relaxed);
 
     
     let mut sched = SCHEDULER.lock();

@@ -163,7 +163,7 @@ impl Shell {
             }
 
             match c {
-                '\n' => {
+                '\n' | '\r' => {
                     self.print("\n");
                     self.execute_command();
                     self.command_buffer.clear();
@@ -337,6 +337,17 @@ impl Shell {
                 for _ in 0..1000000 { core::hint::spin_loop(); }
                 self.print("  [####################] 100% - Done!\n");
                 self.print("System installed successfully. Please reboot.\n");
+            },
+            "shutdown" => {
+                crate::acpi::shutdown();
+            },
+            "reboot" => {
+                self.print("Rebooting...\n");
+                unsafe {
+                    use x86_64::instructions::port::Port;
+                    // standard PS/2 keyboard controller reset
+                    Port::<u8>::new(0x64).write(0xFE);
+                }
             },
             "goto" => {
                 if parts.len() < 2 { self.print("Usage: goto <url>\n"); }

@@ -6,7 +6,7 @@
 
 extern crate alloc;
 
-use limine::request::{FramebufferRequest, HhdmRequest, ExecutableAddressRequest, MemoryMapRequest}; 
+use limine::request::{FramebufferRequest, HhdmRequest, ExecutableAddressRequest, MemoryMapRequest, RsdpRequest}; 
 use limine::BaseRevision;
 use core::sync::atomic::Ordering;
 
@@ -32,6 +32,7 @@ mod logger;
 mod serial; // NEW
 mod ata;
 mod fat;
+mod acpi;
 
 #[used]
 static BASE_REVISION: BaseRevision = BaseRevision::new();
@@ -43,6 +44,8 @@ static HHDM_REQUEST: HhdmRequest = HhdmRequest::new();
 static KERNEL_ADDR_REQUEST: ExecutableAddressRequest = ExecutableAddressRequest::new();
 #[used]
 static MEMMAP_REQUEST: MemoryMapRequest = MemoryMapRequest::new();
+#[used]
+static RSDP_REQUEST: RsdpRequest = RsdpRequest::new();
 
 #[panic_handler]
 fn panic(info: &core::panic::PanicInfo) -> ! {
@@ -104,6 +107,12 @@ pub extern "C" fn _start() -> ! {
     state::KERNEL_DELTA.store(kernel_response.virtual_base() - kernel_response.physical_base(), Ordering::Relaxed);
 
     unsafe { memory::init(hhdm_offset, memmap) };
+    
+    // 3.5 ACPI INIT
+    if let Some(rsdp_response) = RSDP_REQUEST.get_response() {
+        acpi::init(rsdp_response.address() as u64);
+    }
+
     fs::init();
 
     // 4. GUI INIT

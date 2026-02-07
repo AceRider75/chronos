@@ -72,6 +72,49 @@ pub unsafe fn map_user_page(virt: u64, phys: u64) {
     x86_64::instructions::tlb::flush(addr);
 }
 
+/// Maps a kernel page (No Ring 3 access)
+pub unsafe fn map_kernel_page(virt: u64, phys: u64) {
+    let hhdm = HHDM;
+    let addr = VirtAddr::new(virt);
+    let l4_table_phys = x86_64::registers::control::Cr3::read().0.start_address().as_u64();
+    let pml4 = &mut *((l4_table_phys + hhdm) as *mut PageTable);
+
+    // Level 4
+    let p4_idx = addr.p4_index();
+    if pml4[p4_idx].is_unused() {
+        let frame = alloc_frame();
+        zero_frame(frame.as_u64());
+        pml4[p4_idx].set_addr(frame, PageTableFlags::PRESENT | PageTableFlags::WRITABLE);
+    }
+
+    // Level 3
+    let pdpt_phys = pml4[p4_idx].addr();
+    let pdpt = &mut *((pdpt_phys.as_u64() + hhdm) as *mut PageTable);
+    let p3_idx = addr.p3_index();
+    if pdpt[p3_idx].is_unused() {
+        let frame = alloc_frame();
+        zero_frame(frame.as_u64());
+        pdpt[p3_idx].set_addr(frame, PageTableFlags::PRESENT | PageTableFlags::WRITABLE);
+    }
+
+    // Level 2
+    let pd_phys = pdpt[p3_idx].addr();
+    let pd = &mut *((pd_phys.as_u64() + hhdm) as *mut PageTable);
+    let p2_idx = addr.p2_index();
+    if pd[p2_idx].is_unused() {
+        let frame = alloc_frame();
+        zero_frame(frame.as_u64());
+        pd[p2_idx].set_addr(frame, PageTableFlags::PRESENT | PageTableFlags::WRITABLE);
+    }
+
+    // Level 1
+    let pt_phys = pd[p2_idx].addr();
+    let pt = &mut *((pt_phys.as_u64() + hhdm) as *mut PageTable);
+    pt[addr.p1_index()].set_addr(PhysAddr::new(phys), PageTableFlags::PRESENT | PageTableFlags::WRITABLE);
+
+    x86_64::instructions::tlb::flush(addr);
+}
+
 unsafe fn zero_frame(phys: u64) {
     let ptr = (phys + HHDM) as *mut u64;
     for i in 0..(4096/8) { core::ptr::write_volatile(ptr.add(i), 0); }
