@@ -1,5 +1,6 @@
 #![feature(abi_x86_interrupt)]
 #![feature(alloc_error_handler)]
+#![feature(naked_functions)]
 #![no_std]
 #![no_main]
 
@@ -72,6 +73,7 @@ pub extern "C" fn _start() -> ! {
     gdt::init(); 
     interrupts::init_idt();
     unsafe { interrupts::PICS.lock().initialize() };
+    interrupts::init_pit();
     interrupts::enable_listening();
     x86_64::instructions::interrupts::enable(); 
 
@@ -112,9 +114,27 @@ pub extern "C" fn _start() -> ! {
     // We use a block {} to lock, add tasks, and then release the lock immediately
     {
         let mut sched = scheduler::SCHEDULER.lock();
-        sched.add_task("Shell", 100_000, shell::shell_task);
+        sched.add_task("Shell", 10_000_000, shell::shell_task);
+        
         fn idle_task() { core::hint::black_box(0); }
         sched.add_task("Idle", 10_000, idle_task);
+        
+        fn test_syscall_task() {
+            let msg = "Syscall Test: Preemption is working!\n";
+            loop {
+                unsafe {
+                    core::arch::asm!(
+                        "int 0x80",
+                        in("rax") 1,
+                        in("rdi") msg.as_ptr() as u64,
+                        in("rsi") msg.len() as u64,
+                    );
+                }
+                // Busy wait to simulate load
+                for _ in 0..10_000_000 { core::hint::spin_loop(); }
+            }
+        }
+        sched.add_task("SysTest", 500_000, test_syscall_task);
     }
 
     writer::print("Chronos OS v0.98 (System Monitor)\n");
@@ -130,142 +150,142 @@ pub extern "C" fn _start() -> ! {
     loop {
         let start = unsafe { core::arch::x86_64::_rdtsc() };
 
-        // FIX: Use Global Scheduler instead of local variable
-        scheduler::SCHEDULER.lock().execute_frame();
+        // Run scheduler step (handles context switching)
+        scheduler::step();
 
         // --- GUI LOGIC ---
         let (mx, my, btn) = mouse::get_state();
 
-        if let Some(shell_mutex) = shell::get_shell_mut() {
-            // A. Focus / Z-Order
-            if btn && !is_dragging {
-                let mut clicked_idx = None;
-                for (i, win) in shell_mutex.windows.iter().enumerate().rev() {
-                    if win.contains(mx, my) {
-                        clicked_idx = Some(i);
-                        break;
-                    }
-                }
-                if let Some(idx) = clicked_idx {
-                    // Z-Order: Bring to Front
-                    let win = shell_mutex.windows.remove(idx);
-                    shell_mutex.windows.push(win);
-                    let new_idx = shell_mutex.windows.len() - 1;
-                    shell_mutex.active_idx = new_idx;
-                    
-                    let win = &mut shell_mutex.windows[new_idx];
-                    
-                    // 1. Check Buttons First
-                    let action = win.handle_title_bar_click(mx, my);
+        // 1. Taskbar (Always available)
+        let mut taskbar = compositor::Window::new(0, height - 30, width, 30, "Taskbar");
+        let time = time::read_rtc();
+        use alloc::format;
+        let time_str = format!("{:02}:{:02}:{:02}", time.hours, time.minutes, time.seconds);
+        taskbar.cursor_x = width - 100;
+        taskbar.cursor_y = 5;
+        taskbar.print(&time_str);
 
-                    if action == 1 {
-                         // Close
-                         shell_mutex.windows.remove(idx);
-                         if shell_mutex.active_idx >= shell_mutex.windows.len() {
-                             shell_mutex.active_idx = if shell_mutex.windows.is_empty() { 0 } else { shell_mutex.windows.len() - 1 };
-                         }
-                    } else if action == 2 {
-                         // Maximize
-                         if win.maximized {
-                             if let Some((x, y, w, h)) = win.saved_rect {
-                                 win.x = x; win.y = y; win.width = w; win.height = h;
-                                 win.maximized = false;
-                                 win.saved_rect = None;
-                                 win.realloc_buffer();
-                                 win.draw_decorations();
+        // 2. Try to render Shell Windows (Non-blocking to avoid deadlock with preempted Shell task)
+        if let Some(mut shell_lock) = shell::SHELL.try_lock() {
+            if let Some(ref mut shell_mutex) = *shell_lock {
+                // ... GUI Logic ...
+                // A. Update Mouse/Focus
+                let mut is_dragging_local = is_dragging;
+                let mut drag_offset_x_local = drag_offset_x; // local copy
+                let mut drag_offset_y_local = drag_offset_y;
+
+                 // A. Focus / Z-Order
+                if btn && !is_dragging_local {
+                    let mut clicked_idx = None;
+                    for (i, win) in shell_mutex.windows.iter().enumerate().rev() {
+                        if win.contains(mx, my) {
+                            clicked_idx = Some(i);
+                            break;
+                        }
+                    }
+                    if let Some(idx) = clicked_idx {
+                        let win = shell_mutex.windows.remove(idx);
+                        shell_mutex.windows.push(win);
+                        let new_idx = shell_mutex.windows.len() - 1;
+                        shell_mutex.active_idx = new_idx;
+                        
+                        let win = &mut shell_mutex.windows[new_idx];
+                        let action = win.handle_title_bar_click(mx, my);
+
+                        if action == 1 {
+                             if shell_mutex.windows.len() > 1 {
+                                 shell_mutex.windows.remove(new_idx);
+                                 if shell_mutex.active_idx >= shell_mutex.windows.len() {
+                                     shell_mutex.active_idx = if shell_mutex.windows.is_empty() { 0 } else { shell_mutex.windows.len() - 1 };
+                                 }
+                                 writer::print("Window Closed via X Button\n");
+                             } else {
+                                  // writer::print("Cannot close last window!\n");
                              }
-                         } else {
-                             win.saved_rect = Some((win.x, win.y, win.width, win.height));
-                             win.x = 0; win.y = 0; win.width = width; win.height = height - 30; // -30 for taskbar
-                             win.maximized = true;
-                             win.realloc_buffer();
-                             win.draw_decorations();
-                         }
-                    } else {
-                        // 2. If NO button clicked, check for Dragging
-                        if win.is_title_bar(mx, my) {
-                            is_dragging = true;
-                            drag_offset_x = mx - win.x;
-                            drag_offset_y = my - win.y;
+                        } else if action == 2 {
+                             if win.maximized {
+                                 if let Some((x, y, w, h)) = win.saved_rect {
+                                     win.x = x; win.y = y; win.width = w; win.height = h;
+                                     win.maximized = false; win.saved_rect = None;
+                                     win.realloc_buffer(); win.draw_decorations();
+                                 }
+                             } else {
+                                 win.saved_rect = Some((win.x, win.y, win.width, win.height));
+                                 win.x = 0; win.y = 0; win.width = width; win.height = height - 30;
+                                 win.maximized = true;
+                                 win.realloc_buffer(); win.draw_decorations();
+                             }
+                        } else if win.is_title_bar(mx, my) {
+                            is_dragging_local = true;
+                            drag_offset_x_local = mx - win.x;
+                            drag_offset_y_local = my - win.y;
                         } else {
-                            // 3. Pass to window for selection
                             win.handle_mouse(mx, my, btn);
                         }
                     }
-                }
-            } else if !btn {
-                is_dragging = false;
-                // Still pass to active window to handle button release
-                let active_idx = shell_mutex.active_idx;
-                if let Some(win) = shell_mutex.windows.get_mut(active_idx) {
-                    win.handle_mouse(mx, my, btn);
-                }
-            } else if btn && is_dragging {
-                // Already dragging, handled below
-            } else if btn {
-                // Clicked but not on a window? Clear active selection
-                let active_idx = shell_mutex.active_idx;
-                if let Some(win) = shell_mutex.windows.get_mut(active_idx) {
-                    if !win.contains(mx, my) {
-                        win.clear_selection();
-                    } else {
-                        win.handle_mouse(mx, my, btn);
+                } else if !btn {
+                    is_dragging_local = false;
+                    let idx = shell_mutex.active_idx;
+                    // Check bounds just in case
+                    if idx < shell_mutex.windows.len() {
+                         shell_mutex.windows[idx].handle_mouse(mx, my, btn);
+                    }
+                } else if btn && is_dragging_local {
+                    let idx = shell_mutex.active_idx;
+                    if idx < shell_mutex.windows.len() {
+                        let win = &mut shell_mutex.windows[idx];
+                        if mx > drag_offset_x_local { win.x = mx - drag_offset_x_local; }
+                        if my > drag_offset_y_local { win.y = my - drag_offset_y_local; }
                     }
                 }
-            }
+                
+                // Write back drag state
+                is_dragging = is_dragging_local;
+                drag_offset_x = drag_offset_x_local;
+                drag_offset_y = drag_offset_y_local;
 
-            // B. Dragging
-            if is_dragging {
-                let idx = shell_mutex.active_idx;
-                if let Some(win) = shell_mutex.windows.get_mut(idx) {
-                    if mx > drag_offset_x { win.x = mx - drag_offset_x; }
-                    if my > drag_offset_y { win.y = my - drag_offset_y; }
+                // C. UPDATE TASK MANAGER windows
+                for win in shell_mutex.windows.iter_mut() {
+                    if win.title == "System Monitor" {
+                        shell::Shell::update_monitor(win);
+                    } else if win.title == "File Explorer" {
+                        shell::Shell::update_explorer(win, &shell_mutex.current_dir);
+                    } else if win.title.starts_with("Nano - ") {
+                        shell::Shell::update_nano(win, &shell_mutex.nano_status);
+                    }
                 }
-            }
 
-            // C. UPDATE TASK MANAGER (If active)
-            // This needs to happen here (outside the scheduler lock)
-            for win in shell_mutex.windows.iter_mut() {
-                if win.title == "System Monitor" {
-                    shell::Shell::update_monitor(win);
-                } else if win.title == "File Explorer" {
-                    shell::Shell::update_explorer(win, &shell_mutex.current_dir);
-                } else if win.title.starts_with("Nano - ") {
-                    shell::Shell::update_nano(win, &shell_mutex.nano_status);
+                // --- BUDGET BORDERS (Interrupt-Safe) ---
+                let shell_load = x86_64::instructions::interrupts::without_interrupts(|| {
+                    let mut sched = scheduler::SCHEDULER.lock();
+                    let shell_task = sched.tasks.iter().find(|t| t.name == "Shell");
+                    if let Some(t) = shell_task {
+                        (t.last_cost * 100).checked_div(t.budget).unwrap_or(0)
+                    } else { 0 }
+                });
+
+                if let Some(win) = shell_mutex.windows.get_mut(shell_mutex.active_idx) {
+                    win.set_load_color(shell_load as usize);
                 }
+
+                // D. RENDER EVERYTHING
+                let mut draw_list: alloc::vec::Vec<&compositor::Window> = alloc::vec::Vec::new();
+                draw_list.push(&taskbar);
+                for win in &shell_mutex.windows {
+                    draw_list.push(win);
+                }
+                desktop.render(&draw_list, Some(shell_mutex.active_idx), mx, my);
+            } else {
+                // Shell is None (Initializing)
+                let draw_list: alloc::vec::Vec<&compositor::Window> = alloc::vec![&taskbar];
+                desktop.render(&draw_list, None, mx, my);
             }
-
-            // --- BUDGET BORDERS ---
-            let shell_load = {
-                let sched = scheduler::SCHEDULER.lock();
-                let shell_task = sched.tasks.iter().find(|t| t.name == "Shell");
-                if let Some(t) = shell_task {
-                    (t.last_cost * 100).checked_div(t.budget).unwrap_or(0)
-                } else { 0 }
-            };
-
-            if let Some(win) = shell_mutex.windows.get_mut(shell_mutex.active_idx) {
-                win.set_load_color(shell_load as usize);
-            }
-
-            // D. Render
-            let mut draw_list: alloc::vec::Vec<&compositor::Window> = alloc::vec::Vec::new();
-            
-            let mut taskbar = compositor::Window::new(0, height - 30, width, 30, "Taskbar");
-            let time = time::read_rtc();
-            use alloc::format;
-            let time_str = format!("{:02}:{:02}:{:02}", time.hours, time.minutes, time.seconds);
-            taskbar.cursor_x = width - 100;
-            taskbar.cursor_y = 5;
-            taskbar.print(&time_str);
-            draw_list.push(&taskbar);
-
-            for win in &shell_mutex.windows {
-                draw_list.push(win);
-            }
-
-            desktop.render(&draw_list, Some(shell_mutex.active_idx));
+        } else {
+            // Shell is busy
+            let draw_list: alloc::vec::Vec<&compositor::Window> = alloc::vec![&taskbar];
+            desktop.render(&draw_list, None, mx, my);
         }
+
 
         let end_work = unsafe { core::arch::x86_64::_rdtsc() };
         let elapsed = end_work - start;

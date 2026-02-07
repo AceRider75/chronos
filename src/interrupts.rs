@@ -6,8 +6,9 @@ use spin::Mutex;
 use x86_64::instructions::port::Port;
 use pc_keyboard::{layouts, DecodedKey, HandleControl, Keyboard, ScancodeSet1};
 use x86_64::VirtAddr;
-use crate::{state, input, writer, gdt};
+use crate::{state, input, writer, gdt, scheduler};
 use core::sync::atomic::{Ordering, AtomicBool};
+use crate::scheduler::{TaskContext, SCHEDULER, SCHEDULER_CONTEXT};
 
 static CTRL_PRESSED: AtomicBool = AtomicBool::new(false);
 static SHIFT_PRESSED: AtomicBool = AtomicBool::new(false);
@@ -38,6 +39,15 @@ pub fn enable_listening() {
     }
 }
 
+pub fn init_pit() {
+    let divisor: u16 = 11931; // ~100Hz
+    unsafe {
+        Port::new(0x43).write(0x36u8);
+        Port::new(0x40).write((divisor & 0xFF) as u8);
+        Port::new(0x40).write((divisor >> 8) as u8);
+    }
+}
+
 lazy_static! {
     static ref KEYBOARD: Mutex<Keyboard<layouts::Us104Key, ScancodeSet1>> =
         Mutex::new(Keyboard::new(ScancodeSet1::new(), layouts::Us104Key, HandleControl::MapLettersToUnicode));
@@ -50,14 +60,25 @@ lazy_static! {
         idt.breakpoint.set_handler_fn(breakpoint_handler);
         idt.page_fault.set_handler_fn(page_fault_handler);
         
-        idt[InterruptIndex::Keyboard as usize].set_handler_fn(keyboard_interrupt_handler);
-        idt[InterruptIndex::Mouse as usize].set_handler_fn(mouse_interrupt_handler);
-        idt[InterruptIndex::Timer as usize].set_handler_fn(timer_interrupt_handler);
-        
-        // SYSTEM CALL (0x80)
-        idt[SYSCALL_IRQ as usize]
-            .set_handler_fn(syscall_handler)
-            .set_privilege_level(PrivilegeLevel::Ring3);
+        unsafe {
+            idt[InterruptIndex::Keyboard as usize]
+                .set_handler_fn(keyboard_interrupt_handler)
+                .set_stack_index(gdt::INTERRUPT_IST_INDEX);
+                
+            idt[InterruptIndex::Mouse as usize]
+                .set_handler_fn(mouse_interrupt_handler)
+                .set_stack_index(gdt::INTERRUPT_IST_INDEX);
+
+            idt[InterruptIndex::Timer as usize]
+                .set_handler_fn(core::mem::transmute(timer_interrupt_handler as *const ()))
+                .set_stack_index(gdt::INTERRUPT_IST_INDEX);
+            
+            // SYSTEM CALL (0x80)
+            idt[SYSCALL_IRQ as usize]
+                .set_handler_fn(core::mem::transmute(syscall_handler as *const ()))
+                .set_privilege_level(PrivilegeLevel::Ring3)
+                .set_stack_index(gdt::INTERRUPT_IST_INDEX);
+        }
         
         idt
     };
@@ -84,6 +105,7 @@ extern "x86-interrupt" fn page_fault_handler(
     
     use alloc::format;
     writer::print(&format!("Accessed Address (CR2): {:x}\n", cr2));
+    writer::print(&format!("Instruction Pointer (RIP): {:x}\n", _stack_frame.instruction_pointer.as_u64()));
     
     if error_code.contains(PageFaultErrorCode::PROTECTION_VIOLATION) {
         writer::print("Reason: PROTECTION VIOLATION (Ring 3 blocked)\n");
@@ -95,38 +117,64 @@ extern "x86-interrupt" fn page_fault_handler(
     loop { core::hint::spin_loop(); }
 }
 
-// THE SYSCALL HANDLER
-extern "x86-interrupt" fn syscall_handler(stack_frame: InterruptStackFrame) {
-    x86_64::instructions::interrupts::enable();
-
-    // 1. Get Video Info
-    let video_addr = state::VIDEO_PTR.load(Ordering::Relaxed);
-    let width = state::SCREEN_WIDTH.load(Ordering::Relaxed);
-    let height = state::SCREEN_HEIGHT.load(Ordering::Relaxed);
-
-    // 3. (Removed Blue Box Drawing)
-    // The shell will handle the success message upon resume.
-
-    // Return to shell by manually switching stack and jumping
-    // We cannot rely on IRETQ to switch stacks when returning to Ring 0.
-    
-    let rsp = crate::shell::KERNEL_RSP.load(Ordering::Relaxed);
-    let entry = crate::shell::resume_shell as *const () as u64;
-
-    unsafe {
-        core::arch::asm!(
-            "mov rsp, {0}",   // 1. Restore Kernel Stack
-            "sti",            // 2. Enable Interrupts
-            "jmp {1}",        // 3. Jump to Shell
-            in(reg) rsp,
-            in(reg) entry,
-            options(noreturn)
-        );
-    }
+#[unsafe(naked)]
+pub extern "C" fn timer_interrupt_handler() {
+    core::arch::naked_asm!(
+        // CPU already pushed: ss, rsp, rflags, cs, rip (at higher addresses)
+        // We need r15 at RSP+0, r14 at RSP+8, ..., rax at RSP+112
+        // So push rax first (ends up at RSP+112), then down to r15 (ends up at RSP+0)
+        "push rax",
+        "push rbx",
+        "push rcx",
+        "push rdx",
+        "push rsi",
+        "push rdi",
+        "push rbp",
+        "push r8",
+        "push r9",
+        "push r10",
+        "push r11",
+        "push r12",
+        "push r13",
+        "push r14",
+        "push r15",
+        "mov rdi, rsp",
+        "call {handle_timer}",
+        "pop r15",
+        "pop r14",
+        "pop r13",
+        "pop r12",
+        "pop r11",
+        "pop r10",
+        "pop r9",
+        "pop r8",
+        "pop rbp",
+        "pop rdi",
+        "pop rsi",
+        "pop rdx",
+        "pop rcx",
+        "pop rbx",
+        "pop rax",
+        "iretq",
+        handle_timer = sym handle_timer_preemption,
+    );
 }
 
-extern "x86-interrupt" fn timer_interrupt_handler(_stack_frame: InterruptStackFrame) {
+extern "C" fn handle_timer_preemption(context: *mut TaskContext) {
     state::KEY_COUNT.fetch_add(1, Ordering::Relaxed);
+    crate::serial_print!("."); // Debug: Verify timer is firing
+
+    let mut sched = SCHEDULER.lock();
+    if let Some(idx) = sched.current_task_idx {
+        unsafe {
+            // 1. Save Task Context
+            sched.tasks[idx].context = *context;
+            // 2. Load Scheduler Context (Swap!) with interrupts enabled
+            *context = SCHEDULER_CONTEXT;
+            (*context).rflags |= 0x200; // Force IF bit
+        }
+    }
+
     unsafe { PICS.lock().notify_end_of_interrupt(InterruptIndex::Timer as u8); }
 }
 
@@ -195,6 +243,87 @@ extern "x86-interrupt" fn keyboard_interrupt_handler(_stack_frame: InterruptStac
         }
     }
     unsafe { PICS.lock().notify_end_of_interrupt(InterruptIndex::Keyboard as u8); }
+}
+
+#[unsafe(naked)]
+pub extern "C" fn syscall_handler() {
+    core::arch::naked_asm!(
+        "push rax",
+        "push rbx",
+        "push rcx",
+        "push rdx",
+        "push rsi",
+        "push rdi",
+        "push rbp",
+        "push r8",
+        "push r9",
+        "push r10",
+        "push r11",
+        "push r12",
+        "push r13",
+        "push r14",
+        "push r15",
+        "mov rdi, rsp",
+        "call {handle_syscall}",
+        "pop r15",
+        "pop r14",
+        "pop r13",
+        "pop r12",
+        "pop r11",
+        "pop r10",
+        "pop r9",
+        "pop r8",
+        "pop rbp",
+        "pop rdi",
+        "pop rsi",
+        "pop rdx",
+        "pop rcx",
+        "pop rbx",
+        "pop rax",
+        "iretq",
+        handle_syscall = sym handle_syscall_rust,
+    );
+}
+
+extern "C" fn handle_syscall_rust(context: *mut TaskContext) {
+    let rax = unsafe { (*context).rax };
+    let rdi = unsafe { (*context).rdi };
+    let rsi = unsafe { (*context).rsi };
+
+    match rax {
+        1 => { // print
+            let ptr = rdi as *const u8;
+            let len = rsi as usize;
+            let s = unsafe { core::str::from_utf8_unchecked(core::slice::from_raw_parts(ptr, len)) };
+            writer::print(s);
+        }
+        2 => { // exit
+            let mut sched = SCHEDULER.lock();
+            if let Some(idx) = sched.current_task_idx {
+                sched.tasks.remove(idx);
+                sched.current_task_idx = None;
+                // Switch back to scheduler with interrupts enabled!
+                unsafe { 
+                    *context = SCHEDULER_CONTEXT;
+                    (*context).rflags |= 0x200; // Force IF bit
+                }
+            }
+        }
+        3 => { // yield
+            let mut sched = SCHEDULER.lock();
+            if let Some(idx) = sched.current_task_idx {
+                // 1. Save Task Context!
+                sched.tasks[idx].context = unsafe { *context };
+                
+                // 2. Switch back to scheduler with interrupts enabled!
+                unsafe { 
+                    *context = SCHEDULER_CONTEXT;
+                    (*context).rflags |= 0x200; // Force IF bit
+                }
+            }
+        }
+        _ => {}
+    }
 }
 
 extern "x86-interrupt" fn mouse_interrupt_handler(_stack_frame: InterruptStackFrame) {

@@ -4,13 +4,13 @@ use x86_64::structures::gdt::{GlobalDescriptorTable, Descriptor, SegmentSelector
 use lazy_static::lazy_static;
 
 pub const DOUBLE_FAULT_IST_INDEX: u16 = 0;
+pub const INTERRUPT_IST_INDEX: u16 = 1;
 
 lazy_static! {
     static ref TSS: TaskStateSegment = {
         let mut tss = TaskStateSegment::new();
         
-        // 1. DEFINE THE KERNEL STACK (RSP0)
-        // This is where the CPU jumps when a User Mode app causes an interrupt/crash.
+        // 1. DEFINE THE KERNEL STACK (RSP0) - For Privilege Changes (Ring 3 -> Ring 0)
         const STACK_SIZE: usize = 4096 * 5;
         static mut KERNEL_STACK: [u8; STACK_SIZE] = [0; STACK_SIZE];
         let stack_start = VirtAddr::from_ptr(unsafe { &KERNEL_STACK });
@@ -19,11 +19,18 @@ lazy_static! {
         // CRITICAL FIX: Set RSP0
         tss.privilege_stack_table[0] = stack_end;
 
-        // 2. DEFINE THE DOUBLE FAULT STACK (Existing code)
+        // 2. DEFINE THE DOUBLE FAULT STACK (Index 0)
         tss.interrupt_stack_table[DOUBLE_FAULT_IST_INDEX as usize] = {
              static mut DF_STACK: [u8; STACK_SIZE] = [0; STACK_SIZE];
              let df_start = VirtAddr::from_ptr(unsafe { &DF_STACK });
              df_start + STACK_SIZE
+        };
+
+        // 3. DEFINE THE INTERRUPT STACK (Index 1) - To force stack switch for Kernel interrupts
+        tss.interrupt_stack_table[INTERRUPT_IST_INDEX as usize] = {
+             static mut INT_STACK: [u8; STACK_SIZE] = [0; STACK_SIZE];
+             let int_start = VirtAddr::from_ptr(unsafe { &INT_STACK });
+             int_start + STACK_SIZE
         };
         
         tss

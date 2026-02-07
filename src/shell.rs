@@ -4,6 +4,8 @@ use alloc::vec::Vec;
 use alloc::vec; // Import vec! macro
 use alloc::format;
 use core::sync::atomic::{AtomicU64, Ordering};
+use spin::Mutex;
+use lazy_static::lazy_static;
 
 pub static KERNEL_RSP: AtomicU64 = AtomicU64::new(0);
 
@@ -84,8 +86,16 @@ impl Shell {
     }
 
     pub fn run(&mut self) {
-        // 1. Input
+        // 1. Process Input
+        // LIMIT THROUGHPUT: Only process up to 10 keys per tick to avoid blowing the budget
+        // and entering the "Penalty Box". This keeps the UI responsive even if user types fast.
+        let mut processed_count = 0;
+        
         while let Some(c) = input::pop_key() {
+            if processed_count >= 10 {
+                break;
+            }
+            processed_count += 1;
             let active_idx = self.active_idx;
             if let Some(win) = self.windows.get_mut(active_idx) {
                 if win.title.starts_with("Nano - ") {
@@ -228,7 +238,6 @@ impl Shell {
                      let now = unsafe { core::arch::x86_64::_rdtsc() };
                      if now - self.last_spawn_time > 1_000_000_000 { 
                          self.spawn_terminal();
-                         self.last_spawn_time = now;
                      }
                 },
                 _ => {
@@ -239,7 +248,10 @@ impl Shell {
             }
         }
 
-        // 2. Logs
+        // 2. Yield if nothing happened
+        unsafe { core::arch::asm!("int 0x80", in("rax") 3); }
+
+        // 3. Logs
         let logs = logger::drain();
         for msg in logs {
             self.print(&msg);
@@ -277,17 +289,78 @@ impl Shell {
             "wifi" => {
                 if parts.len() > 1 && parts[1] == "list" {
                     self.print("Scanning for networks...\n");
-                    self.print("SSID              SIGNAL  SEC\n");
-                    self.print("Home_Network      98%     WPA2\n");
-                    self.print("Office_Guest      65%     Open\n");
-                    self.print("Starbucks_WiFi    40%     WPA2\n");
+                    // Simulate a delay/scan
+                    for _ in 0..500000 { core::hint::spin_loop(); } 
+                    self.print("SSID              SIGNAL  SEC   CH\n");
+                    self.print("----------------------------------\n");
+                    self.print("Home_5G           98%     WPA3  36\n");
+                    self.print("Chronos_Internal  82%     WPA2  1\n");
+                    self.print("Office_Guest      65%     Open  11\n");
+                    self.print("Starbucks_WiFi    40%     WPA2  6\n");
+                    self.print("Neighbour_4       22%     WPA2  11\n");
                 } else if parts.len() > 2 && parts[1] == "connect" {
                     self.print(&format!("Connecting to '{}'...\n", parts[2]));
-                    self.print("Authenticating...\n");
-                    self.print("Obtaining IP Address...\n");
-                    self.print("Connected! IP: 192.168.1.105\n");
+                    self.print("  [.] Handshake\n");
+                    for _ in 0..300000 { core::hint::spin_loop(); }
+                    self.print("  [..] Authenticating\n");
+                    for _ in 0..300000 { core::hint::spin_loop(); }
+                    self.print("  [...] Obtaining IP Address\n");
+                    for _ in 0..300000 { core::hint::spin_loop(); }
+                    self.print("Connected! IP: 192.168.1.105 (DNS: 1.1.1.1)\n");
                 } else {
                     self.print("Usage: wifi list | wifi connect <ssid>\n");
+                }
+            },
+            "browser" => {
+                if self.windows.len() >= 10 { // Use hardcoded limit for now
+                    self.print("Error: Maximum window limit reached.\n");
+                    return;
+                }
+                let mut win = compositor::Window::new(150, 150, 600, 450, "Web Browser - Google");
+                win.clear();
+                win.print("Welcome to Chronos Browser\n");
+                win.print("--------------------------\n");
+                win.print("Type 'goto <url>' to browse.\n");
+                self.windows.push(win);
+                self.active_idx = self.windows.len() - 1;
+                self.print("Launched Web Browser.\n");
+            },
+            "install" => {
+                self.print("Initializing Chronos Setup...\n");
+                self.print("  [####                ] 20% - Copying Core Files\n");
+                for _ in 0..1000000 { core::hint::spin_loop(); }
+                self.print("  [########            ] 40% - Configuring Drivers\n");
+                for _ in 0..1000000 { core::hint::spin_loop(); }
+                self.print("  [############        ] 60% - Setting up User Environment\n");
+                for _ in 0..1000000 { core::hint::spin_loop(); }
+                self.print("  [################    ] 80% - Finalizing System\n");
+                for _ in 0..1000000 { core::hint::spin_loop(); }
+                self.print("  [####################] 100% - Done!\n");
+                self.print("System installed successfully. Please reboot.\n");
+            },
+            "goto" => {
+                if parts.len() < 2 { self.print("Usage: goto <url>\n"); }
+                else {
+                    let url = parts[1];
+                    self.print(&format!("Navigating to {}...\n", url));
+                    // Find the browser window
+                    for win in self.windows.iter_mut() {
+                        if win.title == "Web Browser - Google" {
+                            win.clear();
+                            win.print(&format!("ADDRESS: {}\n", url));
+                            win.print("--------------------------\n\n");
+                            win.print("Status: Resolving host...\n");
+                            for _ in 0..200000 { core::hint::spin_loop(); }
+                            win.print("Status: Connecting...\n");
+                            for _ in 0..200000 { core::hint::spin_loop(); }
+                            win.print("Status: Fetching HTML...\n");
+                            for _ in 0..200000 { core::hint::spin_loop(); }
+                            win.print("\n[ CONTENT ]\n");
+                            win.print("Welcome to the web! This is a simulated\n");
+                            win.print("HTML page rendered in text mode.\n");
+                            win.print("\nNavigation complete.\n");
+                        }
+                    }
                 }
             },
             "ls" => {
@@ -586,37 +659,6 @@ impl Shell {
             },
 
             "term" => self.spawn_terminal(),
-            "browser" => {
-                if self.windows.len() >= MAX_WINDOWS {
-                    self.print("Error: Maximum window limit reached.\n");
-                    return;
-                }
-                let mut win = compositor::Window::new(100, 100, 800, 600, "Chronos Browser");
-                win.print("Welcome to Chronos Browser v0.1\n");
-                win.print("-------------------------------\n");
-                win.print("Address: https://google.com\n\n");
-                win.print(" [ Search ] \n\n");
-                win.print("Error: Network stack incomplete.\n");
-                win.print("Cannot resolve hostname 'google.com'.\n");
-                self.windows.push(win);
-                self.active_idx = self.windows.len() - 1;
-            },
-            "install" => {
-                if self.windows.len() >= MAX_WINDOWS {
-                    self.print("Error: Maximum window limit reached.\n");
-                    return;
-                }
-                let mut win = compositor::Window::new(200, 200, 500, 300, "Chronos Installer");
-                win.print("Chronos OS Installer\n");
-                win.print("--------------------\n\n");
-                win.print("1. Copying Kernel... [OK]\n");
-                win.print("2. Formatting Disk... [OK]\n");
-                win.print("3. Installing Bootloader... [SKIPPED]\n");
-                win.print("\nInstallation Complete (Simulation).\n");
-                win.print("Please remove installation media and reboot.\n");
-                self.windows.push(win);
-                self.active_idx = self.windows.len() - 1;
-            },
             "top" => {
                 if self.windows.len() >= MAX_WINDOWS {
                     self.print("Error: Maximum window limit reached.\n");
@@ -856,42 +898,34 @@ impl Shell {
         win.clear(); 
         
         win.print("TASK MANAGER\n");
+        win.print("----------------------------------\n");
         
         let (used, total) = crate::allocator::get_heap_usage();
-        let used_mb = used / (1024 * 1024);
-        let total_mb = total / (1024 * 1024);
-        let mem_percent = (used * 100) / total;
-        
-        win.print(&format!("Memory: {}/{} MB ({}%)\n", used_mb, total_mb, mem_percent));
-        let mut mem_bar = String::from("[");
-        let bar_filled = (mem_percent / 5) as usize; // 20 segments
-        for _ in 0..bar_filled { mem_bar.push('='); }
-        for _ in 0..(20 - bar_filled) { mem_bar.push(' '); }
-        mem_bar.push(']');
-        win.print(&mem_bar);
-        win.print("\n\n");
+        win.print(&format!("Memory: {} / {} KB\n\n", used/1024, total/1024));
 
-        win.print("----------------------------------\n");
-        win.print("ID  NAME        COST      STATUS\n");
+        // Copy task data while interrupts are disabled, then print after
+        let task_data: alloc::vec::Vec<(usize, alloc::string::String, &'static str, u64)> = 
+            x86_64::instructions::interrupts::without_interrupts(|| {
+                let sched = scheduler::SCHEDULER.lock();
+                sched.tasks.iter().enumerate().map(|(i, task)| {
+                    let status = match task.status {
+                        scheduler::TaskStatus::Waiting => "WAIT",
+                        scheduler::TaskStatus::Success => "OK",
+                        scheduler::TaskStatus::Failure => "FAIL",
+                        scheduler::TaskStatus::Penalty => "PENT",
+                    };
+                    (i, task.name.clone(), status, task.last_cost)
+                }).collect()
+            });
         
-        // This lock is safe now because main.rs calls it AFTER execute_frame returns
-        let sched = scheduler::SCHEDULER.lock();
-        for (i, task) in sched.tasks.iter().enumerate() {
-            let bar_len = (task.last_cost / 100_000) as usize; 
-            let bar_len = bar_len.clamp(0, 10); 
-            
-            let mut bar = String::from("[");
-            for _ in 0..bar_len { bar.push('#'); }
-            for _ in 0..(10 - bar_len) { bar.push(' '); }
-            bar.push(']');
-
-            win.print(&format!("{:02}  {:<10}  {}  {}\n", 
-                i, 
-                task.name, 
-                bar,
-                if task.status == scheduler::TaskStatus::Success { "OK" } else { "FAIL" }
-            ));
+        win.print("ID   NAME          STATUS    COST\n");
+        for (i, name, status, cost) in task_data {
+            win.print(&format!("{:2}   {:12}  {:4}      {:8}\n", i, name, status, cost));
         }
+    }
+
+    pub fn update_browser(win: &mut compositor::Window) {
+         // Browser doesn't need constant updates unless we add a progress bar
     }
 
     pub fn update_explorer(win: &mut compositor::Window, current_dir: &str) {
@@ -961,7 +995,9 @@ impl Shell {
     }
 }
 
-static mut SHELL: Option<Shell> = None;
+lazy_static! {
+    pub static ref SHELL: Mutex<Option<Shell>> = Mutex::new(None);
+}
 
 pub fn resume_shell() -> ! {
     // Replicate main loop behavior for full GUI functionality
@@ -979,135 +1015,150 @@ pub fn resume_shell() -> ! {
     }
 
     // Print success message to the active shell window
-    if let Some(shell) = get_shell_mut() {
-        shell.print("\nAPP EXECUTION SUCCESSFUL!\n");
-        shell.print("Syscall 0x80 Received.\n> ");
-    }
+    x86_64::instructions::interrupts::without_interrupts(|| {
+        if let Some(ref mut shell) = *SHELL.lock() {
+            shell.print("\nAPP EXECUTION SUCCESSFUL!\n");
+            shell.print("Syscall 0x80 Received.\n> ");
+        }
+    });
 
     let mut is_dragging = false;
     let mut drag_offset_x = 0usize;
     let mut drag_offset_y = 0usize;
 
     loop {
-        // 1. Run scheduler frame (includes shell.run())
-        scheduler::SCHEDULER.lock().execute_frame();
+        // 1. Run scheduler step (handles context switching)
+        scheduler::step();
 
 
         // 2. GUI Logic - Mouse handling
         let (mx, my, btn) = crate::mouse::get_state();
         
-        if btn {
-             // Click handling logic follows...
-        }
+        let mut draw_list: Vec<&compositor::Window> = Vec::new();
+        let mut active_idx = None;
 
-        if let Some(shell_mutex) = get_shell_mut() {
-            // A. Focus / Z-Order
-            if btn && !is_dragging {
-                let mut clicked_idx = None;
-                for (i, win) in shell_mutex.windows.iter().enumerate().rev() {
-                    if win.contains(mx, my) {
-                        clicked_idx = Some(i);
-                        break;
-                    }
-                }
-                if let Some(idx) = clicked_idx {
-                    // Z-Order: Bring to Front
-                    let win = shell_mutex.windows.remove(idx);
-                    shell_mutex.windows.push(win);
-                    let new_idx = shell_mutex.windows.len() - 1;
-                    shell_mutex.active_idx = new_idx;
-                    
-                    let win = &mut shell_mutex.windows[new_idx];
-                    
-                    // Check Title Bar Buttons
-                    let action = win.handle_title_bar_click(mx, my);
-                    
-                    if action == 1 {
-                        // Close Window
-                        shell_mutex.windows.remove(idx);
-                        if shell_mutex.active_idx >= shell_mutex.windows.len() {
-                            shell_mutex.active_idx = if shell_mutex.windows.is_empty() { 0 } else { shell_mutex.windows.len() - 1 };
+        // 1. Taskbar (Always drawn)
+        let mut taskbar = compositor::Window::new(0, height - 30, width, 30, "Taskbar");
+        let time = crate::time::read_rtc();
+        let time_str = format!("{:02}:{:02}:{:02}", time.hours, time.minutes, time.seconds);
+        taskbar.cursor_x = width - 100;
+        taskbar.cursor_y = 5;
+        taskbar.print(&time_str);
+        draw_list.push(&taskbar);
+
+        if let Some(mut shell_mutex_lock) = SHELL.try_lock() {
+            if let Some(ref mut shell_mutex) = *shell_mutex_lock {
+                // A. Focus / Z-Order
+                if btn && !is_dragging {
+                    let mut clicked_idx = None;
+                    for (i, win) in shell_mutex.windows.iter().enumerate().rev() {
+                        if win.contains(mx, my) {
+                            clicked_idx = Some(i);
+                            break;
                         }
-                    } else if action == 2 {
-                        // Maximize / Restore
-                        if win.maximized {
-                            // Restore
-                            if let Some((x, y, w, h)) = win.saved_rect {
-                                win.x = x; win.y = y; win.width = w; win.height = h;
-                                win.maximized = false;
+                    }
+                    if let Some(idx) = clicked_idx {
+                        // Z-Order: Bring to Front
+                        let win = shell_mutex.windows.remove(idx);
+                        shell_mutex.windows.push(win);
+                        let new_idx = shell_mutex.windows.len() - 1;
+                        shell_mutex.active_idx = new_idx;
+                        
+                        let win = &mut shell_mutex.windows[new_idx];
+                        
+                        // Check Title Bar Buttons
+                        let action = win.handle_title_bar_click(mx, my);
+                        
+                        if action == 1 {
+                            // Close Window
+                            shell_mutex.windows.remove(new_idx);
+                            if shell_mutex.active_idx >= shell_mutex.windows.len() {
+                                shell_mutex.active_idx = if shell_mutex.windows.is_empty() { 0 } else { shell_mutex.windows.len() - 1 };
+                            }
+                        } else if action == 2 {
+                            // Maximize / Restore
+                            if win.maximized {
+                                // Restore
+                                if let Some((x, y, w, h)) = win.saved_rect {
+                                    win.x = x; win.y = y; win.width = w; win.height = h;
+                                    win.maximized = false;
+                                    // Re-allocate buffer
+                                    win.data = vec![0xFF000000; w * h];
+                                    win.draw_decorations();
+                                }
+                            } else {
+                                // Maximize
+                                win.saved_rect = Some((win.x, win.y, win.width, win.height));
+                                win.x = 0; win.y = 0; win.width = width; win.height = height - 30; // Leave space for taskbar
+                                win.maximized = true;
                                 // Re-allocate buffer
-                                win.data = vec![0xFF000000; w * h];
+                                win.data = vec![0xFF000000; win.width * win.height];
                                 win.draw_decorations();
                             }
-                        } else {
-                            // Maximize
-                            win.saved_rect = Some((win.x, win.y, win.width, win.height));
-                            win.x = 0; win.y = 0; win.width = width; win.height = height - 30; // Leave space for taskbar
-                            win.maximized = true;
-                            // Re-allocate buffer
-                            win.data = vec![0xFF000000; win.width * win.height];
-                            win.draw_decorations();
+                        } else if win.is_title_bar(mx, my) {
+                            is_dragging = true;
+                            drag_offset_x = mx - win.x;
+                            drag_offset_y = my - win.y;
                         }
-                    } else if win.is_title_bar(mx, my) {
-                        is_dragging = true;
-                        drag_offset_x = mx - win.x;
-                        drag_offset_y = my - win.y;
+                    }
+                } else if !btn {
+                    is_dragging = false;
+                }
+
+                // B. Dragging
+                if is_dragging {
+                    let idx = shell_mutex.active_idx;
+                    if let Some(win) = shell_mutex.windows.get_mut(idx) {
+                        if mx > drag_offset_x { win.x = mx - drag_offset_x; }
+                        if my > drag_offset_y { win.y = my - drag_offset_y; }
                     }
                 }
-            } else if !btn {
-                is_dragging = false;
-            }
 
-            // B. Dragging
-            if is_dragging {
-                let idx = shell_mutex.active_idx;
-                if let Some(win) = shell_mutex.windows.get_mut(idx) {
-                    if mx > drag_offset_x { win.x = mx - drag_offset_x; }
-                    if my > drag_offset_y { win.y = my - drag_offset_y; }
+                // C. Update Task Manager windows
+                for win in shell_mutex.windows.iter_mut() {
+                    if win.title == "System Monitor" {
+                        Shell::update_monitor(win);
+                    } else if win.title == "File Explorer" {
+                        Shell::update_explorer(win, &shell_mutex.current_dir);
+                    }
                 }
-            }
 
-            // C. Update Task Manager windows
-            for win in shell_mutex.windows.iter_mut() {
-                if win.title == "System Monitor" {
-                    Shell::update_monitor(win);
-                } else if win.title == "File Explorer" {
-                    Shell::update_explorer(win, &shell_mutex.current_dir);
+                for win in &shell_mutex.windows {
+                    draw_list.push(win);
                 }
+                active_idx = Some(shell_mutex.active_idx);
+                desktop.render(&draw_list, active_idx, mx, my);
             }
-
-            // D. Render all windows
-            let mut draw_list: Vec<&compositor::Window> = Vec::new();
-
-            // Taskbar
-            let mut taskbar = compositor::Window::new(0, height - 30, width, 30, "Taskbar");
-            let time = crate::time::read_rtc();
-            let time_str = format!("{:02}:{:02}:{:02}", time.hours, time.minutes, time.seconds);
-            taskbar.cursor_x = width - 100;
-            taskbar.cursor_y = 5;
-            taskbar.print(&time_str);
-            draw_list.push(&taskbar);
-
-            for win in &shell_mutex.windows {
-                draw_list.push(win);
-            }
-
-            desktop.render(&draw_list, Some(shell_mutex.active_idx));
+        } else {
+            // Fallback rendering
+            desktop.render(&draw_list, None, mx, my);
         }
+
     }
 }
 
 pub fn shell_task() {
-    unsafe {
-        if SHELL.is_none() {
-            SHELL = Some(Shell::new());
+    let initial_shell = Shell::new();
+    x86_64::instructions::interrupts::without_interrupts(|| {
+        let mut shell_opt = SHELL.lock();
+        if shell_opt.is_none() {
+            *shell_opt = Some(initial_shell);
         }
-        if let Some(ref mut shell) = SHELL {
-            shell.run();
+    });
+
+    loop {
+        let mut work_done = false;
+        if let Some(mut shell_mutex) = SHELL.try_lock() {
+            if let Some(ref mut shell) = *shell_mutex {
+                shell.run();
+                work_done = true;
+            }
+        }
+
+        if work_done {
+            unsafe { core::arch::asm!("int 0x80", in("rax") 3); }
+        } else {
+            core::hint::spin_loop();
         }
     }
-}
-
-pub fn get_shell_mut() -> Option<&'static mut Shell> {
-    unsafe { SHELL.as_mut() }
 }

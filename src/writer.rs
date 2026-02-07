@@ -149,6 +149,9 @@ pub fn print(s: &str) {
     // 1. Log it
     logger::log(s);
     
+    // 2. Serial Log
+    crate::serial_print!("{}", s);
+    
     // 2. Force draw it (for debugging/panics)
     // We use try_lock to avoid deadlocks in interrupts
     if let Some(mut w) = WRITER.try_lock() {

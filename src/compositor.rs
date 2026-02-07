@@ -1,6 +1,6 @@
 use alloc::vec::Vec;
 use alloc::vec;
-use crate::{writer, mouse};
+use crate::writer;
 use noto_sans_mono_bitmap::{get_raster, FontWeight, RasterHeight};
 
 // --- STYLE CONSTANTS ---
@@ -443,7 +443,7 @@ impl Compositor {
         Compositor { width, height, backbuffer, frame_count: 0 }
     }
 
-    pub fn render(&mut self, windows: &[&Window], active_idx: Option<usize>) {
+    pub fn render(&mut self, windows: &[&Window], active_idx: Option<usize>, mx: usize, my: usize) {
         self.frame_count += 1;
         self.backbuffer.fill(0x00102040); // Clear to Blue
 
@@ -536,7 +536,6 @@ impl Compositor {
         }
 
         // Draw Mouse
-        let (mx, my, _) = mouse::get_state();
         for i in 0..10 {
             for j in 0..10 {
                 let sy = my + i;
