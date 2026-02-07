@@ -732,18 +732,8 @@ impl Shell {
             "run" => {
                 if parts.len() < 2 { self.print("Usage: run <filename>\n"); } else {
                     if let Some(file) = fs::list_files().iter().find(|f| f.name.contains(parts[1])) {
-                        let hhdm = state::HHDM_OFFSET.load(Ordering::Relaxed);
-                        let file_phys = (file.data.as_ptr() as u64) - hhdm;
-                        let load_base = 0x400_000;
-                        unsafe {
-                            for i in 0..16 {
-                                memory::map_user_page(load_base + (i*4096), (file_phys & !0xFFF) + (i*4096));
-                            }
-                        }
-                        let raw = unsafe { *(file.data.as_ptr().add(24) as *const u64) };
-                        let target = if raw >= load_base { raw } else { load_base + (file.data.as_ptr() as u64 % 4096) + raw };
-                        self.print(&format!("Jumping to {:x}\n", target));
-                        self.spawn_user_process_at(target);
+                        self.print(&format!("Loading ELF: {}\n", file.name));
+                        elf::load_and_run(&file.data);
                     } else { self.print("File not found.\n"); }
                 }
             },
@@ -880,16 +870,15 @@ impl Shell {
         }
     }
 
-    fn spawn_user_process_at(&self, entry_point: u64) -> ! {
-        let hhdm = state::HHDM_OFFSET.load(Ordering::Relaxed);
+    pub extern "C" fn run_user_trampoline(entry_point: u64) {
+        let _hhdm = state::HHDM_OFFSET.load(Ordering::Relaxed);
         let user_stack_virt = 0x800_000;
-        #[repr(align(4096))]
-        struct Stack([u8; 4096]);
-        static mut S: Stack = Stack([0; 4096]);
-        let k_delta = state::KERNEL_DELTA.load(Ordering::Relaxed);
-        let s_phys = (unsafe { &S as *const _ as u64 }) - k_delta;
+
+        // Allocate a new physical frame for this task's user stack
+        let stack_frame = memory::alloc_frame();
         
-        unsafe { memory::map_user_page(user_stack_virt, s_phys); }
+        unsafe { memory::map_user_page(user_stack_virt, stack_frame.as_u64()); }
+        
         let (code, data) = gdt::get_user_selectors();
         userspace::jump_to_code_raw(entry_point, code, data, user_stack_virt + 4096);
     }
@@ -1137,8 +1126,11 @@ pub fn resume_shell() -> ! {
     }
 }
 
-pub fn shell_task() {
-    let initial_shell = Shell::new();
+pub extern "C" fn shell_task(_arg: u64) {
+    let mut initial_shell = Shell::new();
+    
+    initial_shell.print("> "); 
+
     x86_64::instructions::interrupts::without_interrupts(|| {
         let mut shell_opt = SHELL.lock();
         if shell_opt.is_none() {

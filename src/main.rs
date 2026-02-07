@@ -114,10 +114,10 @@ pub extern "C" fn _start() -> ! {
     // We use a block {} to lock, add tasks, and then release the lock immediately
     {
         let mut sched = scheduler::SCHEDULER.lock();
-        sched.add_task("Shell", 10_000_000, shell::shell_task);
+        sched.add_task("Shell", 10_000_000, shell::shell_task, 0);
         
-        fn idle_task() { core::hint::black_box(0); }
-        sched.add_task("Idle", 10_000, idle_task);
+        extern "C" fn idle_task(_arg: u64) { core::hint::black_box(0); }
+        sched.add_task("Idle", 10_000, idle_task, 0);
         
 
     }

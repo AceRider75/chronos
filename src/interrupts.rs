@@ -59,6 +59,12 @@ lazy_static! {
         let mut idt = InterruptDescriptorTable::new();
         idt.breakpoint.set_handler_fn(breakpoint_handler);
         idt.page_fault.set_handler_fn(page_fault_handler);
+        idt.general_protection_fault.set_handler_fn(general_protection_fault_handler);
+        
+        unsafe {
+            idt.double_fault.set_handler_fn(double_fault_handler)
+                .set_stack_index(gdt::DOUBLE_FAULT_IST_INDEX);
+        }
         
         unsafe {
             idt[InterruptIndex::Keyboard as usize]
@@ -114,6 +120,34 @@ extern "x86-interrupt" fn page_fault_handler(
     }
     
     writer::print("SYSTEM HALTED.\n");
+    crate::serial_print!("[EXCEPTION: PAGE FAULT] CR2={:x} RIP={:x}\n", cr2, _stack_frame.instruction_pointer.as_u64());
+    if error_code.contains(PageFaultErrorCode::PROTECTION_VIOLATION) {
+        crate::serial_print!("Reason: PROTECTION VIOLATION\n");
+    } else {
+        crate::serial_print!("Reason: PAGE NOT PRESENT\n");
+    }
+    loop { core::hint::spin_loop(); }
+}
+
+extern "x86-interrupt" fn general_protection_fault_handler(
+    _stack_frame: InterruptStackFrame,
+    error_code: u64,
+) {
+    x86_64::instructions::interrupts::disable();
+    crate::serial_print!("\n[EXCEPTION: GENERAL PROTECTION FAULT]\n");
+    crate::serial_print!("Error Code: {}\n", error_code);
+    crate::serial_print!("RIP: {:x}\n", _stack_frame.instruction_pointer.as_u64());
+    crate::serial_print!("SYSTEM HALTED.\n");
+    loop { core::hint::spin_loop(); }
+}
+
+extern "x86-interrupt" fn double_fault_handler(
+    _stack_frame: InterruptStackFrame,
+    _error_code: u64,
+) -> ! {
+    crate::serial_print!("\n[EXCEPTION: DOUBLE FAULT]\n");
+    crate::serial_print!("RIP: {:x}\n", _stack_frame.instruction_pointer.as_u64());
+    crate::serial_print!("SYSTEM HALTED.\n");
     loop { core::hint::spin_loop(); }
 }
 
@@ -162,8 +196,8 @@ pub extern "C" fn timer_interrupt_handler() {
 
 extern "C" fn handle_timer_preemption(context: *mut TaskContext) {
     state::KEY_COUNT.fetch_add(1, Ordering::Relaxed);
-    crate::serial_print!("."); // Debug: Verify timer is firing
 
+    
     let mut sched = SCHEDULER.lock();
     if let Some(idx) = sched.current_task_idx {
         unsafe {
@@ -296,6 +330,7 @@ extern "C" fn handle_syscall_rust(context: *mut TaskContext) {
             let len = rsi as usize;
             let s = unsafe { core::str::from_utf8_unchecked(core::slice::from_raw_parts(ptr, len)) };
             writer::print(s);
+            crate::serial_print!("{}", s);
         }
         2 => { // exit
             let mut sched = SCHEDULER.lock();

@@ -274,17 +274,16 @@ where F: FnMut(&str, &Node) {
 
 
 pub fn init() {
-    // 1. Try to load from disk first
+    // 1. Try to load from disk first (don't return, we want to merge modules too)
     if load_from_disk() {
         writer::print("[FS] Persistent VFS loaded from disk.\n");
-        return;
+    } else {
+        writer::print("[FS] No persistent VFS found. Initializing pure VFS.\n");
     }
 
-    // 2. Fallback to Limine modules
-    writer::print("[FS] No persistent VFS found. Initializing from boot modules.\n");
-    let mut root = ROOT.lock();
-    
+    // 2. Load Limine modules (Overwrites or adds to root)
     if let Some(response) = MODULE_REQUEST.get_response() {
+        let mut root = ROOT.lock();
         for module in response.modules() {
             let start = module.addr() as *const u8;
             let size = module.size() as usize;
@@ -295,10 +294,15 @@ pub fn init() {
             let clean_name = path_str.rfind('/').map(|idx| &path_str[idx+1..]).unwrap_or(path_str);
 
             if let Node::Directory { children, .. } = &mut *root {
-                children.push(Node::File {
-                    name: clean_name.to_string(),
-                    data,
-                });
+                // If file already exists from disk, overwrite it with module version (likely newer)
+                if let Some(pos) = children.iter().position(|c| c.name() == clean_name) {
+                    children[pos] = Node::File { name: clean_name.to_string(), data };
+                } else {
+                    children.push(Node::File {
+                        name: clean_name.to_string(),
+                        data,
+                    });
+                }
             }
         }
     }

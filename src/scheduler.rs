@@ -5,7 +5,7 @@ use core::arch::x86_64::_rdtsc;
 use spin::Mutex;
 use lazy_static::lazy_static;
 
-pub type Job = fn();
+pub type Job = extern "C" fn(u64);
 
 fn task_exit() {
     unsafe {
@@ -83,18 +83,19 @@ impl Scheduler {
         }
     }
 
-    pub fn add_task(&mut self, name: &str, budget: u64, job: Job) {
+    pub fn add_task(&mut self, name: &str, budget: u64, job: Job, arg: u64) {
         let mut stack = alloc::vec![0u8; 65536];
         let stack_ptr = stack.as_ptr() as u64 + 65536;
         
         // Push task_exit to stack so tasks can 'return'
         unsafe {
             let stack_top = (stack_ptr - 8) as *mut u64;
-            *stack_top = task_exit as u64;
+            *stack_top = task_exit as *const () as u64;
         }
 
         let mut context = TaskContext::default();
         context.rip = job as u64;
+        context.rdi = arg; // Pass argument in RDI (System V ABI)
         context.rsp = stack_ptr - 8;
         context.cs = 0x8; // Kernel Code Selector
         context.ss = 0x10; // Kernel Data Selector

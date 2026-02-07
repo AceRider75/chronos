@@ -10,11 +10,12 @@ if [ ! -f disk.img ]; then
     mcopy -i disk.img disk_readme.txt ::README.TXT
     rm disk_readme.txt
     
-    # NEW: Compile and add testapp1.elf to disk
-    nasm -f elf64 testapp1.s -o testapp1.o
-    ld -N -e 0x400080 -Ttext 0x400080 testapp1.o -o testapp1.elf
-    mcopy -i disk.img testapp1.elf ::TESTAPP1.ELF
 fi
+
+# NEW: Compile testapp1.elf (Always update)
+nasm -f elf64 testapp1.s -o testapp1.o
+# Link at 0x400000 (Standard load address)
+ld -N -e 0x400000 -Ttext 0x400000 testapp1.o -o testapp.elf
 
 # 1. Compile
 cargo build --target x86_64-unknown-none --release
