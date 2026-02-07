@@ -249,7 +249,7 @@ impl Shell {
         }
 
         // 2. Yield if nothing happened
-        unsafe { core::arch::asm!("int 0x80", in("rax") 3); }
+
 
         // 3. Logs
         let logs = logger::drain();

@@ -119,22 +119,7 @@ pub extern "C" fn _start() -> ! {
         fn idle_task() { core::hint::black_box(0); }
         sched.add_task("Idle", 10_000, idle_task);
         
-        fn test_syscall_task() {
-            let msg = "Syscall Test: Preemption is working!\n";
-            loop {
-                unsafe {
-                    core::arch::asm!(
-                        "int 0x80",
-                        in("rax") 1,
-                        in("rdi") msg.as_ptr() as u64,
-                        in("rsi") msg.len() as u64,
-                    );
-                }
-                // Busy wait to simulate load
-                for _ in 0..10_000_000 { core::hint::spin_loop(); }
-            }
-        }
-        sched.add_task("SysTest", 500_000, test_syscall_task);
+
     }
 
     writer::print("Chronos OS v0.98 (System Monitor)\n");
@@ -281,9 +266,9 @@ pub extern "C" fn _start() -> ! {
                 desktop.render(&draw_list, None, mx, my);
             }
         } else {
-            // Shell is busy
-            let draw_list: alloc::vec::Vec<&compositor::Window> = alloc::vec![&taskbar];
-            desktop.render(&draw_list, None, mx, my);
+            // Shell is busy - Do NOTHING to preserve the last frame.
+            // Rendering only the taskbar here causes all other windows to "vanish" for one frame,
+            // creating a flickering effect.
         }
 
 
